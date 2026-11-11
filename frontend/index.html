@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SnapFoley — Local Studio (test frontend)</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🎧</span>
+    <div>
+      <h1>SnapFoley <span class="tag-local">LOCAL</span></h1>
+      <p class="sub">Zero-shot video-to-foley • fully offline • i5 / RTX 2050 tuned</p>
+    </div>
+  </div>
+  <div class="health" id="healthBadge">checking backend…</div>
+</header>
+
+<main class="grid">
+  <!-- LEFT: Upload -->
+  <section class="card">
+    <h2>1. Upload video</h2>
+    <div id="dropzone" class="dropzone" tabindex="0">
+      <p>Drop <b>mp4 / mov / webm</b> here or click</p>
+      <input id="videoInput" type="file" accept="video/*" hidden />
+      <button class="btn ghost" type="button">Choose video</button>
+    </div>
+    <video id="preview" controls playsinline class="preview hidden"></video>
+    <p class="hint" id="fileMeta">No file yet. Max 200MB.</p>
+
+    <div class="row">
+      <label>Sensitivity
+        <select id="sensitivity">
+          <option value="low">low</option>
+          <option value="medium" selected>medium</option>
+          <option value="high">high</option>
+        </select>
+      </label>
+      <label>YOLO conf <span id="yoloVal">0.50</span>
+        <input id="yoloConf" type="range" min="0.1" max="0.9" step="0.05" value="0.5" />
+      </label>
+    </div>
+
+    <button id="processBtn" class="btn primary" disabled>→ Process video</button>
+    <div class="progress-wrap hidden" id="progressWrap">
+      <div class="progress"><div id="progressBar"></div></div>
+      <p id="progressText">Uploading…</p>
+    </div>
+    <p class="mono" id="taskId"></p>
+  </section>
+
+  <!-- RIGHT: Results -->
+  <section class="card">
+    <h2>2. Results</h2>
+    <div id="empty">Upload a video to see footstep events + timeline.</div>
+    <div id="results" class="hidden">
+      <div class="row stats">
+        <div class="stat"><span id="statEvents">0</span><small>events</small></div>
+        <div class="stat"><span id="statDuration">0s</span><small>duration</small></div>
+        <div class="stat"><span id="statPrompt">—</span><small>VLM prompt</small></div>
+      </div>
+
+      <h3>Timeline</h3>
+      <div id="timeline" class="timeline"></div>
+
+      <h3>Events</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Time</th><th>Foot</th><th>Type</th><th>Conf</th></tr></thead>
+          <tbody id="eventsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="row">
+        <button class="btn primary" id="genFinalBtn">▶ Generate final video with audio</button>
+      </div>
+      <div id="finalWrap" class="hidden">
+        <p class="mono" id="finalStatus">Generating…</p>
+        <video id="finalVideo" controls playsinline class="preview"></video>
+        <div class="row">
+          <button class="btn" id="dlFinalBtn">Download video (with audio)</button>
+          <button class="btn" id="csvBtn">Download CSV</button>
+          <button class="btn" id="jsonBtn">Download JSON</button>
+          <button class="btn ghost" id="resetBtn">Reset</button>
+        </div>
+       </div>
+      <p class="hint">Stems are local (CLAP retrieval). Audio is generated locally and muxed with ffmpeg.</p>
+    </div>
+
+    <hr />
+    <h3>Podcast script (test)</h3>
+    <div class="row">
+      <input id="scriptInput" type="file" accept=".txt,.md" />
+      <button class="btn" id="scriptBtn">Upload script</button>
+    </div>
+    <pre class="mono" id="scriptOut"></pre>
+  </section>
+</main>
+
+<footer class="foot">
+  Backend: <code id="apiBase"></code> • Fully local — no API keys • QA: <code>python qa_loop.py</code>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

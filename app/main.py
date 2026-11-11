@@ -1,0 +1,226 @@
+"""
+SnapFoley Backend — WINNING fully-local version.
+Target: i5-12450H | 8GB RAM | RTX 2050 4GB VRAM
+No remote API, no web download, no keys. Offline-first.
+"""
+import os, json, tempfile, shutil, subprocess, base64
+from datetime import datetime
+from io import BytesIO
+from typing import Optional
+import pandas as pd
+import cv2, numpy as np
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from pathlib import Path
+
+from app.schemas import Timeline
+from app.detectors.footstep import FootstepDetector
+from app.detectors.universal import UniversalDetector
+from app.detectors.base import ScriptDetector
+from app.vlm_local import LocalVLM
+from app.audio.retrieval import RetrievalBackend
+from app.audio.post import trim_silence, normalize_lufs, fit_to_duration
+from app import mixer
+from app.video import create_annotated_video
+
+app = FastAPI(title="SnapFoley Backend", version="1.0.0-local")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+tasks = {}
+vlm = LocalVLM(device="cpu")  # CPU only — saves VRAM for YOLO on RTX 2050 4GB
+retriever = RetrievalBackend(bank_dir="audio_bank", top_k=3)
+script_detector = ScriptDetector()
+detector = UniversalDetector(sensitivity="medium", yolo_conf=0.5)  # any video, not just footsteps
+
+class ProcessingConfig(BaseModel):
+    sensitivity: str = "medium"
+    yolo_conf: float = 0.5
+    use_hybrid: bool = True
+    mode: str = "video"  # video | script
+
+def get_ffmpeg():
+    p = shutil.which("ffmpeg")
+    if p: return p
+    try:
+        import imageio_ffmpeg; return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+@app.get("/api/health")
+def health():
+    # no heavy model load — QA loop stays fast on 8GB
+    return {
+        "status": "ok", "mode": "offline", "profile": "laptop_2050_8gb",
+        "offline_guarantee": True,
+        "models": {"yolo": "yolov8n.pt", "vlm": "SmolVLM-500M", "retrieval": "CLAP-base"},
+        "ffmpeg": get_ffmpeg(),
+    }
+
+@app.get("/")
+def root():
+    idx = Path(__file__).parent.parent / "frontend" / "index.html"
+    if idx.exists():
+        return FileResponse(str(idx))
+    return {"message": "SnapFoley Backend (fully local)", "version": "1.0.0-local"}
+
+@app.post("/api/upload-video")
+async def upload_video(file: UploadFile = File(...), config: Optional[str] = None):
+    if not file.content_type or not file.content_type.startswith("video/"):
+        raise HTTPException(400, "File must be video")
+    task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(4).hex()}"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    tmp.write(await file.read()); tmp.close()
+    cfg = ProcessingConfig(**(json.loads(config) if config else {}))
+    tasks[task_id] = {"task_id": task_id, "status": "uploaded", "progress": 0.0,
+                      "video_path": tmp.name, "config": cfg.dict(), "created_at": datetime.now().isoformat()}
+    return {"task_id": task_id, "status": "uploaded"}
+
+@app.post("/api/process/{task_id}")
+def process(task_id: str, background_tasks: BackgroundTasks):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    tasks[task_id]["status"] = "processing"
+    background_tasks.add_task(_process_task, task_id)
+    return {"task_id": task_id, "status": "processing"}
+
+def _process_task(task_id: str):
+    t = tasks[task_id]
+    try:
+        cfg = t["config"]
+        events = detector.detect(t["video_path"], progress_callback=lambda p: t.update(progress=p))
+        t["events"] = [e.dict() for e in events]
+        # local VLM prompt enrichment (fast path — fallback string if model not cached)
+        prompt = vlm.describe_video(t["video_path"])
+        stems = []
+        for ev in events:
+            # per-event prompt (footstep vs activity/ambience), fall back to VLM prompt
+            path, score = retriever.search(ev.prompt or prompt)
+            stems.append({"event_id": ev.event_id, "stem_path": path or "", "backend": "retrieval", "score": score,
+                          "loop": ev.type == "ambience", "gain_db": 0.0, "fade_in": 0.05})
+        t["stems"] = stems
+        t["prompt"] = prompt
+        tl = mixer.build_timeline(task_id, events, [type("C", (), s)() if False else _as_clip(s) for s in stems], duration_sec=(events[-1].end_sec if events else 0))
+        t["timeline"] = tl.dict()
+        t["status"] = "completed"; t["progress"] = 1.0
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        t["status"] = "failed"; t["error"] = str(e)
+
+def _as_clip(d):
+    from app.schemas import Clip
+    return Clip(**{k: d[k] for k in ["event_id","stem_path","backend","score","loop","gain_db","fade_in"] if k in d})
+
+@app.get("/api/status/{task_id}")
+def status(task_id: str):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    t = tasks[task_id]
+    r = {"task_id": task_id, "status": t["status"], "progress": t.get("progress", 0)}
+    if t["status"] == "completed": r.update({"events": t.get("events"), "prompt": t.get("prompt"), "timeline": t.get("timeline")})
+    if "error" in t: r["error"] = t["error"]
+    return r
+
+@app.get("/api/timeline/{task_id}")
+def timeline(task_id: str):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    if tasks[task_id]["status"] != "completed": raise HTTPException(400, "Not ready")
+    return tasks[task_id].get("timeline", {})
+
+@app.post("/api/upload-script")
+async def upload_script(file: UploadFile = File(...)):
+    task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(4).hex()}"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    tmp.write(await file.read()); tmp.close()
+    events = script_detector.detect(tmp.name)
+    stems = []
+    for ev in events:
+        path, score = retriever.search(ev.prompt)
+        stems.append({"event_id": ev.event_id, "stem_path": path or "", "backend": "retrieval", "score": score, "loop": True, "gain_db": -6.0, "fade_in": 0.05})
+    dur = events[-1].end_sec if events else 0
+    tl = mixer.build_timeline(task_id, events, [_as_clip(s) for s in stems], duration_sec=dur)
+    tasks[task_id] = {"task_id": task_id, "status": "completed", "progress": 1.0, "events": [e.dict() for e in events], "stems": stems, "timeline": tl.dict(), "prompt": "script ambience"}
+    return {"task_id": task_id, "status": "completed", "events": len(events)}
+
+@app.get("/api/export-csv/{task_id}")
+def export_csv(task_id: str):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    df = pd.DataFrame(tasks[task_id].get("events", []))
+    buf = BytesIO(); df.to_csv(buf, index=False)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=footsteps_{task_id}.csv"})
+
+@app.get("/api/export-json/{task_id}")
+def export_json(task_id: str):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    return tasks[task_id].get("timeline", {})
+
+@app.post("/api/generate-audio-video/{task_id}")
+def gen_audio_video(task_id: str, background_tasks: BackgroundTasks):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    if tasks[task_id]["status"] != "completed": raise HTTPException(400, "Not completed")
+    tasks[task_id]["final_generating"] = True; tasks[task_id]["final_ready"] = False
+    background_tasks.add_task(_gen_final, task_id)
+    return {"task_id": task_id, "message": "final video started"}
+
+def _gen_final(task_id: str):
+    from app.schemas import Event
+    t = tasks[task_id]
+    try:
+        video_path = t["video_path"]
+        evs = [Event(**e) for e in t.get("events", [])]
+        stems = [s.get("stem_path") for s in t.get("stems", [])]
+        cap = cv2.VideoCapture(video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+        duration = total / fps
+        # 1. annotated temp
+        annotated = tempfile.mktemp(suffix="_annotated.mp4")
+        ok = create_annotated_video(video_path, evs, annotated)
+        if not ok: raise RuntimeError("annotate failed")
+        # 2. audio track
+        audio_track = mixer.mix_track(evs, stems, duration, sr=44100)
+        # 3. merge (fallback to annotated if ffmpeg missing on this host)
+        final = tempfile.mktemp(suffix="_final.mp4")
+        merged = mixer.merge_with_ffmpeg(annotated, audio_track, 44100, final, ffmpeg=get_ffmpeg())
+        if not merged:
+            import shutil as _sh
+            _sh.move(annotated, final)
+            print("[gen] ffmpeg missing — returning annotated video as fallback (install ffmpeg for audio mux)")
+        t["final_path"] = final; t["final_ready"] = True; t["final_generating"] = False; t["final_audio"] = merged
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        t["final_error"] = str(e); t["final_ready"] = False; t["final_generating"] = False
+
+@app.get("/api/audio-video-status/{task_id}")
+def audio_video_status(task_id: str):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    t = tasks[task_id]
+    return {"task_id": task_id, "audio_video_ready": t.get("final_ready", False),
+            "audio_video_generating": t.get("final_generating", False), "audio_video_error": t.get("final_error")}
+
+@app.get("/api/download-audio-video/{task_id}")
+def download_audio_video(task_id: str):
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    t = tasks[task_id]
+    if not t.get("final_ready"): raise HTTPException(400, "Video not ready")
+    p = t.get("final_path")
+    if not p or not os.path.exists(p): raise HTTPException(404, "File missing")
+    return FileResponse(p, media_type="video/mp4", filename=f"snapfoley_{task_id}.mp4")
+
+# Serve the test frontend (same origin, no CORS issues)
+frontend_dir = Path(__file__).parent.parent / "frontend"
+if frontend_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+
+# Health for QA loop
+@app.get("/api/ffmpeg-info")
+def ffmpeg_info():
+    ff = get_ffmpeg()
+    try:
+        proc = subprocess.run([ff, "-version"], capture_output=True, text=True, timeout=5)
+        ver = proc.stdout.splitlines()[0] if proc.returncode == 0 else None
+    except Exception: ver = None
+    return {"ffmpeg_path": ff, "version": ver}

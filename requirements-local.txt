@@ -1,0 +1,26 @@
+# SnapFoley Winning Local Deps — RITO laptop i5-12450H / 8GB / RTX2050 4GB
+# Python 3.10-3.11 required (mediapipe fails on 3.14). Currently host is 3.14 — use Docker or pyenv 3.11.
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic>=2.0
+PyYAML
+opencv-python-headless
+numpy
+pandas
+scipy
+soundfile
+librosa
+Pillow
+python-dotenv
+absl-py
+# models (nano only — fits 4GB VRAM)
+ultralytics
+mediapipe==0.10.9
+# local VLM + retrieval (CPU-friendly)
+transformers
+safetensors
+faiss-cpu
+pyloudnorm
+psutil
+# NO langchain, NO yt-dlp, NO beautifulsoup4 (killed for offline)

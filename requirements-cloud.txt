@@ -1,0 +1,25 @@
+# SnapFoley Cloud deps — HF Spaces free tier (2 vCPU / 16GB RAM, no GPU)
+# Versions pinned to the exact known-good local .venv (proven working combo).
+# torch/torchvision are installed separately in the Dockerfile (CPU-only wheels).
+fastapi==0.162.2
+uvicorn==0.54.0
+python-multipart==0.0.33
+pydantic==2.14.3
+PyYAML==6.0.3
+numpy==2.4.6
+pandas==3.1.1
+scipy==1.17.1
+soundfile==0.14.0
+librosa==0.11.0
+Pillow==13.0.0
+python-dotenv==1.2.4
+absl-py==2.5.1
+psutil==7.2.2
+# detectors (nano models only)
+ultralytics==8.4.208
+mediapipe==0.10.9
+opencv-python-headless==5.0.0.93
+opencv-contrib-python==5.0.0.93
+opencv-python==5.0.0.93
+# intentionally absent: transformers, faiss (VLM + CLAP retrieval disabled -> procedural audio path)
+# intentionally absent: langchain, yt-dlp (offline guarantee)

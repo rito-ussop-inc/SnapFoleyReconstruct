@@ -1,0 +1,54 @@
+# SnapFoley — Winning Config for RITO laptop
+# i5-12450H (8 threads) | 8GB RAM (7.65 usable) | RTX 2050 4GB VRAM | 477GB SSD
+
+app:
+  name: SnapFoley Backend
+  version: 1.0.0-local
+  mode: offline          # fully local, no third-party APIs
+  host: 0.0.0.0
+  port: 7860
+
+hardware:
+  profile: laptop_2050_8gb
+  use_gpu: true          # RTX 2050 4GB, keep VRAM < 3GB
+  gpu_memory_cap_gb: 3.0
+  ram_cap_gb: 7.0
+  max_workers: 2         # was 4 in link2.py — OOM risk on 8GB RAM
+  ffmpeg_threads: 2      # was 4 in real.py
+
+models:
+  yolo: yolov8n.pt       # 5MB nano
+  mediapipe_complexity: 1  # 0=fastest, 1=balanced for 8GB
+  yolo_conf: 0.5
+  sensitivity: medium
+
+vlm:
+  provider: local        # local | none (never openrouter)
+  model: HuggingFaceTB/SmolVLM-500M-Instruct  # ~1GB, CPU-fast, fits 8GB
+  # alternative if VRAM allows: HuggingFaceTB/SmolVLM2-2.2B, Qwen2-VL-2B-4bit
+  device: cpu            # force cpu for VLM on 4GB VRAM, keep GPU for YOLO only
+  max_frames: 3
+  memory_gb: 1.2
+
+audio:
+  sample_rate: 44100
+  retrieval:
+    enabled: true
+    embedder: laion/clap-htsat-unfused  # ~150MB, fits RAM
+    bank_dir: audio_bank
+    index_path: audio_bank/index.faiss
+    top_k: 3
+    score_threshold: 0.75
+  generation:
+    enabled: false       # RTX 2050 4GB can't hold Stable Audio + YOLO together. CPU fallback only.
+    model: stable-audio-open
+    device: cpu
+
+timeline:
+  default_fade_in: 0.05
+  ducking: false
+
+limits:
+  max_video_mb: 200
+  max_script_lines: 200
+  max_duration_sec: 120

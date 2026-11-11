@@ -1,0 +1,70 @@
+# FFmpeg binaries (will be installed via Docker)
+#ffmpeg-7.1-essentials_build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+temp/
+tmp/
+
+# SnapFoley local-only artifacts
+.venv/
+Dockerfile.local
+qa_report.json
+*.out
+tasks/
+audio_bank/
+
+# legacy unused entry points (kept on disk, excluded from the Space repo)
+link.py
+link2.py
+real.py
+reel.py
+agent.py
+agent2.py
+sound_agent.py
+custom_wrapper.py
+qsec.py
+download_model.py
+create_placeholder_audio.py
+requirements.txt

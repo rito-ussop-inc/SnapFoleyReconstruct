@@ -1,0 +1,17 @@
+# Colab-friendly deps — NO version pins (Colab's Python may be 3.12)
+# torch/torchvision come preinstalled on Colab (with CUDA — detection runs even faster there)
+fastapi
+uvicorn[standard]
+python-multipart
+PyYAML
+opencv-python-headless
+pandas
+scipy
+soundfile
+librosa
+Pillow
+python-dotenv
+absl-py
+psutil
+ultralytics
+mediapipe
