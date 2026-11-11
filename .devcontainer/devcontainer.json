@@ -1,0 +1,16 @@
+{
+  "name": "SnapFoley",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb"
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "forwardPorts": [7860],
+  "portsAttributes": {
+    "7860": {
+      "label": "SnapFoley Web UI",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
