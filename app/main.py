@@ -3,14 +3,14 @@ SnapFoley Backend — WINNING fully-local version.
 Target: i5-12450H | 8GB RAM | RTX 2050 4GB VRAM
 No remote API, no web download, no keys. Offline-first.
 """
-import os, json, tempfile, shutil, subprocess, base64
+import os, json, time, re, tempfile, shutil, subprocess, base64
 from datetime import datetime
 from io import BytesIO
 from typing import Optional
 import pandas as pd
 import cv2, numpy as np
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +77,75 @@ async def upload_video(file: UploadFile = File(...), config: Optional[str] = Non
     cfg = ProcessingConfig(**(json.loads(config) if config else {}))
     tasks[task_id] = {"task_id": task_id, "status": "uploaded", "progress": 0.0,
                       "video_path": tmp.name, "config": cfg.dict(), "created_at": datetime.now().isoformat()}
+    return {"task_id": task_id, "status": "uploaded"}
+
+# ---- chunked upload ---------------------------------------------------------
+# Tunnel proxies (GitHub Codespaces port forwarding, trycloudflare, etc.) reject
+# large request bodies with "413 Request Entity Too Large". The frontend splits
+# the video into ~4MB parts, posts each one here, then finalizes below.
+
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "snapfoley_uploads"
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{4,64}")
+
+def _is_video_head(head: bytes) -> bool:
+    """Accept ANY common container by magic bytes: mp4/mov, mkv/webm, avi, ogv, flv, mpeg."""
+    if len(head) < 12: return False
+    if head[4:8] == b"ftyp": return True                                    # mp4 / mov / m4v
+    if head[:4] == b"\x1aE\xdf\xa3": return True                            # mkv / webm (EBML)
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ": return True           # avi
+    if head[:4] == b"OggS": return True                                     # ogg / ogv
+    if head[:3] == b"FLV": return True                                      # flv
+    if head[:4] in (b"\x00\x00\x00\x01", b"\x00\x00\x01\xba"): return True  # mpeg-ts / mpeg-ps
+    return False
+
+def _prune_abandoned_uploads(max_age_s: float = 7200.0):
+    now = time.time()
+    for d in UPLOAD_DIR.iterdir() if UPLOAD_DIR.exists() else []:
+        try:
+            if d.is_dir() and now - d.stat().st_mtime > max_age_s:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+@app.post("/api/upload-chunk")
+async def upload_chunk(upload_id: str = Form(...), index: int = Form(...), chunk: UploadFile = File(...)):
+    if not _ID_RE.fullmatch(upload_id): raise HTTPException(400, "bad upload_id")
+    if index < 0 or index > 10000: raise HTTPException(400, "bad chunk index")
+    data = await chunk.read()
+    d = UPLOAD_DIR / upload_id
+    is_new = not d.exists()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"chunk_{index:06d}").write_bytes(data)
+    if is_new: _prune_abandoned_uploads()
+    return {"ok": True, "index": index, "bytes": len(data)}
+
+class UploadCompleteRequest(BaseModel):
+    upload_id: str
+    filename: str = "video.mp4"
+    config: Optional[dict] = None
+
+@app.post("/api/upload-complete")
+async def upload_complete(req: UploadCompleteRequest):
+    if not _ID_RE.fullmatch(req.upload_id): raise HTTPException(400, "bad upload_id")
+    d = UPLOAD_DIR / req.upload_id
+    parts = sorted(d.glob("chunk_*")) if d.exists() else []
+    if not parts: raise HTTPException(404, "Unknown upload_id — no chunks received")
+    task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(4).hex()}"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    head = b""
+    try:
+        for p in parts:
+            b = p.read_bytes()
+            if not head: head = b[:64]
+            tmp.write(b)
+        tmp.close()
+        if not _is_video_head(head):
+            raise HTTPException(400, "File is not a recognized video container (mp4/mov/mkv/webm/avi/ogv/flv/mpeg)")
+        cfg = ProcessingConfig(**(req.config or {}))
+        tasks[task_id] = {"task_id": task_id, "status": "uploaded", "progress": 0.0,
+                          "video_path": tmp.name, "config": cfg.dict(), "created_at": datetime.now().isoformat()}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
     return {"task_id": task_id, "status": "uploaded"}
 
 @app.post("/api/process/{task_id}")

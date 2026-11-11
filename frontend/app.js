@@ -56,16 +56,12 @@ function setProgress(pct, text){
 els.processBtn.addEventListener("click", async () => {
   const file = els.inputEl;
   if(!file) return;
-  setProgress(0.02, "Uploading video to local backend…");
-  const fd = new FormData();
-  fd.append("file", file);
   const config = { sensitivity: $("sensitivity").value, yolo_conf: Number($("yoloConf").value) };
-  fd.append("config", JSON.stringify(config));
-
   try{
-    const up = await fetch(API + "/api/upload-video", { method: "POST", body: fd });
-    if(!up.ok) throw new Error(await up.text());
-    const j = await up.json();
+    // chunked upload: tunnel proxies (codespaces/cloudflare) 413-reject big single bodies
+    setProgress(0.02, "Uploading video…");
+    const j = await uploadChunked(file, config,
+      p => setProgress(0.02 + 0.08 * p, `Uploading… ${Math.round(p * 100)}% (${(file.size/1024/1024).toFixed(1)}MB)`));
     taskId = j.task_id;
     els.taskIdEl.textContent = "task: " + taskId;
     setProgress(0.1, "Uploaded — processing…");
@@ -77,6 +73,31 @@ els.processBtn.addEventListener("click", async () => {
     setProgress(0, "Error: " + e.message);
   }
 });
+
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per part — safely under tunnel body limits
+
+async function uploadChunked(file, config, onProgress){
+  const uploadId = (crypto.randomUUID ? crypto.randomUUID() : "u" + Date.now() + Math.random().toString(36).slice(2))
+    .replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+  const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  for(let i = 0; i < total; i++){
+    const blob = file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size));
+    const fd = new FormData();
+    fd.append("upload_id", uploadId);
+    fd.append("index", String(i));
+    fd.append("chunk", blob, "chunk.bin");
+    const r = await fetch(API + "/api/upload-chunk", { method: "POST", body: fd });
+    if(!r.ok) throw new Error("upload failed at part " + (i + 1) + "/" + total + ": " + (await r.text()).slice(0, 200));
+    onProgress((i + 1) / total);
+  }
+  const done = await fetch(API + "/api/upload-complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ upload_id: uploadId, filename: file.name, config })
+  });
+  if(!done.ok) throw new Error("finalize failed: " + (await done.text()).slice(0, 200));
+  return done.json();
+}
 
 async function poll(id){
   try{

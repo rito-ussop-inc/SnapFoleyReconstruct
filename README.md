@@ -22,7 +22,9 @@ Served at `/` — upload a video, watch detection progress, then generate + prev
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
 | `/api/health` | GET | liveness + ffmpeg info |
-| `/api/upload-video` | POST | upload video file |
+| `/api/upload-video` | POST | upload video file (single body — small files) |
+| `/api/upload-chunk` | POST | one ~4MB part of a chunked upload (tunnel proxies cap body size) |
+| `/api/upload-complete` | POST | finalize chunked upload → creates the task |
 | `/api/process/{id}` | POST | detect events |
 | `/api/status/{id}` | GET | processing progress |
 | `/api/timeline/{id}` | GET | event timeline JSON |
