@@ -1,6 +1,11 @@
 {
   "name": "SnapFoley",
   "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {
+      "version": "latest"
+    }
+  },
   "hostRequirements": {
     "cpus": 4,
     "memory": "8gb"
