@@ -18,7 +18,9 @@ def create_annotated_video(input_path, events: List[Event], output_path, progres
         return False
     by_frame = {}
     for e in events:
-        by_frame.setdefault(int(e.frame), []).append(e)
+        # hold the marker ~8 frames (~0.25s) so it's actually visible, not a 1-frame flash
+        for f in range(max(0, int(e.frame)), max(0, int(e.frame)) + 8):
+            by_frame.setdefault(f, []).append(e)
     frame_idx = 0
     while cap.isOpened():
         ok, frame = cap.read()
