@@ -250,7 +250,7 @@ def _gen_final(task_id: str):
         ok = create_annotated_video(video_path, evs, annotated)
         if not ok: raise RuntimeError("annotate failed")
         # 2. audio track
-        audio_track = mixer.mix_track(evs, stems, duration, sr=44100)
+        audio_track = mixer.mix_track(evs, stems, duration, sr=44100, prompt=t.get("prompt", ""))
         # 3. merge (fallback to annotated if ffmpeg missing on this host)
         final = tempfile.mktemp(suffix="_final.mp4")
         merged = mixer.merge_with_ffmpeg(annotated, audio_track, 44100, final, ffmpeg=get_ffmpeg())

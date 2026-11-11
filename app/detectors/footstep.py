@@ -130,7 +130,111 @@ class FootstepDetector:
                         start_sec=p/fps, end_sec=p/fps+0.3, frame=int(p),
                         timecode=_smpte(p, fps), confidence=conf,
                         prompt="footsteps on surface, close-mic, foley", duration_hint=0.5, person_id=t))
-        return sorted(events, key=lambda e: e.frame)
+        events = sorted(events, key=lambda e: e.frame)
+        if events:
+            return events
+        # Skeleton failed entirely (POV/selfie walking shots — camera pointing at
+        # the walker's own feet; no full body, so MediaPipe pose yields nothing).
+        # Fall back to gait rhythm from frame-difference motion energy.
+        return self._pov_gait_fallback(video_path, fps, progress_callback)
+
+    def _pov_gait_fallback(self, video_path: str, fps: float, progress_callback=None) -> list[Event]:
+        """Detect footsteps in POV walking videos via gait-rhythm locking.
+
+        POV shots (camera pointing at the walker's own feet) have no full-body
+        skeleton, but the camera bounces once per step. We extract the per-frame
+        global vertical shift (phase correlation) + motion energy, find the
+        dominant cadence in 0.8–3.0 Hz, phase-align a step grid to it, and snap
+        every step to the nearest vertical-bounce extremum.
+        """
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened(): return []
+        fps = cap.get(cv2.CAP_PROP_FPS) or fps
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        energies, vertical, prev = [], [], None
+        frame_idx = 0
+        while cap.isOpened():
+            ok, frame = cap.read()
+            if not ok: break
+            small = cv2.resize(frame, (160, int(160 * frame.shape[0] / max(1, frame.shape[1]))))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            if prev is not None:
+                energies.append(float(np.mean(cv2.absdiff(gray, prev))) / 255.0)
+                try:
+                    (dx, dy), _resp = cv2.phaseCorrelate(prev, gray)
+                    vertical.append(float(dy))
+                except Exception:
+                    vertical.append(0.0)
+            else:
+                energies.append(0.0); vertical.append(0.0)
+            prev = gray
+            frame_idx += 1
+            if progress_callback and frame_idx % 10 == 0:
+                progress_callback(min(frame_idx / total, 1.0))
+        cap.release()
+        dur = len(energies) / fps
+        if dur < 3.0:  # need >= ~3s to lock a gait rhythm
+            return []
+
+        def cadence(x, fmin=0.8, fmax=3.0):
+            x = np.asarray(x, dtype=float)
+            x = x - np.convolve(x, np.ones(max(3, int(fps * 0.8))) / max(3, int(fps * 0.8)), mode="same")
+            w = np.hanning(len(x))
+            F = np.abs(np.fft.rfft(x * w))
+            freqs = np.fft.rfftfreq(len(x), 1.0 / fps)
+            band = (freqs >= fmin) & (freqs <= fmax)
+            if not band.any() or len(F) < 4: return None
+            fb, Fb = freqs[band], F[band]
+            k = int(np.argmax(Fb))
+            snr = float(Fb[k]) / (float(np.median(Fb)) + 1e-9)
+            return float(fb[k]), snr
+
+        cv_ = cadence(vertical)   # vertical bounce: the strong, clean signal
+        ce = cadence(energies)    # motion energy: corroboration
+        cands = []
+        if cv_ and cv_[1] >= 2.5: cands.append((cv_[0], cv_[1], 3.0))       # weight vertical x3
+        if ce and ce[1] >= 2.5: cands.append((ce[0], ce[1], 1.0))
+        if not cands: return []
+        f0 = max(cands, key=lambda c: c[1] * c[2])[0]
+
+        det_v = np.asarray(vertical, dtype=float)
+        det_v = det_v - np.convolve(det_v, np.ones(max(3, int(fps * 0.8))) / max(3, int(fps * 0.8)), mode="same")
+        period = 1.0 / f0
+        cyc = int(round(period * fps))
+        if cyc < 2 or len(det_v) < 3 * cyc: return []
+        # fold by period -> phase of maximum bounce
+        folds = [det_v[i::cyc] for i in range(cyc)]
+        L = min(len(f) for f in folds)
+        fold = np.mean([f[:L] for f in folds], axis=0)
+        phase = int(np.argmax(fold))  # step lands at the biggest bounce extremum
+        t0 = phase / fps
+        n_steps = int((len(det_v) / fps - t0) / period)
+        if n_steps < 4: return []
+
+        events = []
+        half_win = max(2, int(0.15 * fps))
+        for k in range(n_steps):
+            t_k = t0 + k * period
+            c = int(round(t_k * fps))
+            lo, hi = max(0, c - half_win), min(len(det_v), c + half_win + 1)
+            if hi - lo < 3: continue
+            seg = det_v[lo:hi]
+            # snap to the sharpest vertical extremum (impact) inside the window
+            p = lo + int(np.argmax(np.abs(seg - np.mean(seg))))
+            conf = float(min(1.0, 0.55 + abs(float(det_v[p])) * 2.0))
+            lr = "LEFT" if k % 2 == 0 else "RIGHT"
+            events.append(Event(
+                event_id=f"pov_{lr}_{p}", type="footstep",
+                start_sec=p / fps, end_sec=p / fps + 0.25, frame=int(p),
+                timecode=_smpte(p, fps), confidence=conf,
+                prompt="footsteps on surface, close-mic, foley", duration_hint=0.4,
+                person_id=0))
+        # de-dup steps that snapped to the same frame
+        seen, out = set(), []
+        for e in events:
+            if e.frame in seen: continue
+            seen.add(e.frame); out.append(e)
+        return sorted(out, key=lambda e: e.frame)
 
 def _smpte(frame, fps):
     ts = frame/fps
