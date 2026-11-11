@@ -33,6 +33,7 @@ class FootstepDetector:
         self.mp_complexity = mp_complexity
         self._yolo = None
         self._pose = None
+        self._hand_gate = None
         self._load()
 
     def _load(self):
@@ -48,6 +49,12 @@ class FootstepDetector:
                     smooth_landmarks=True, min_detection_confidence=0.5, min_tracking_confidence=0.5)
             except Exception:
                 self._pose = None
+            try:
+                self._hand_gate = mp.solutions.hands.Hands(
+                    static_image_mode=True, max_num_hands=1,
+                    min_detection_confidence=0.5, min_tracking_confidence=0.5)
+            except Exception:
+                self._hand_gate = None
 
     def _estimate_pose(self, frame, bbox):
         if self._pose is None: return None
@@ -66,6 +73,12 @@ class FootstepDetector:
         return res
 
     def detect(self, video_path: str, fps: float = 30.0, progress_callback=None) -> list[Event]:
+        """Skeleton-based footsteps only (third-person full-body views).
+
+        POV/selfie walking has no usable skeleton; that case is handled by
+        `pov_gait_fallback`, which the UniversalDetector runs AFTER the typing
+        check so hands-on-keyboard clips can't be misread as footsteps.
+        """
         if self._yolo is None or self._pose is None:
             return []
         cap = cv2.VideoCapture(str(video_path))
@@ -131,14 +144,9 @@ class FootstepDetector:
                         timecode=_smpte(p, fps), confidence=conf,
                         prompt="footsteps on surface, close-mic, foley", duration_hint=0.5, person_id=t))
         events = sorted(events, key=lambda e: e.frame)
-        if events:
-            return events
-        # Skeleton failed entirely (POV/selfie walking shots — camera pointing at
-        # the walker's own feet; no full body, so MediaPipe pose yields nothing).
-        # Fall back to gait rhythm from frame-difference motion energy.
-        return self._pov_gait_fallback(video_path, fps, progress_callback)
+        return events
 
-    def _pov_gait_fallback(self, video_path: str, fps: float, progress_callback=None) -> list[Event]:
+    def pov_gait_fallback(self, video_path: str, fps: float, progress_callback=None) -> list[Event]:
         """Detect footsteps in POV walking videos via gait-rhythm locking.
 
         POV shots (camera pointing at the walker's own feet) have no full-body
@@ -146,12 +154,19 @@ class FootstepDetector:
         global vertical shift (phase correlation) + motion energy, find the
         dominant cadence in 0.8–3.0 Hz, phase-align a step grid to it, and snap
         every step to the nearest vertical-bounce extremum.
+
+        Guarded so it can't fire on hands-on-keyboard close-ups:
+          - the scene must move coherently (low phase-correlation response —
+            static-camera clips with small moving objects score ~0.9+, walking
+            POVs ~0.5), and
+          - MediaPipe Hands must NOT be seeing hands (checked every 8th frame).
         """
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened(): return []
         fps = cap.get(cv2.CAP_PROP_FPS) or fps
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
         energies, vertical, prev = [], [], None
+        resps, hand_hits, hand_samples = [], 0, 0
         frame_idx = 0
         while cap.isOpened():
             ok, frame = cap.read()
@@ -161,12 +176,23 @@ class FootstepDetector:
             if prev is not None:
                 energies.append(float(np.mean(cv2.absdiff(gray, prev))) / 255.0)
                 try:
-                    (dx, dy), _resp = cv2.phaseCorrelate(prev, gray)
+                    (dx, dy), resp = cv2.phaseCorrelate(prev, gray)
                     vertical.append(float(dy))
+                    resps.append(float(resp))
                 except Exception:
-                    vertical.append(0.0)
+                    vertical.append(0.0); resps.append(0.0)
             else:
-                energies.append(0.0); vertical.append(0.0)
+                energies.append(0.0); vertical.append(0.0); resps.append(0.0)
+            # hand gate: a hands close-up (typing etc.) is not a walking POV
+            if frame_idx % 8 == 0 and self._hand_gate is not None:
+                hs = cv2.resize(frame, (256, int(256 * frame.shape[0] / max(1, frame.shape[1]))))
+                rgb = cv2.cvtColor(hs, cv2.COLOR_BGR2RGB)
+                try:
+                    hres = self._hand_gate.process(rgb)
+                    if hres.multi_hand_landmarks: hand_hits += 1
+                except Exception:
+                    pass
+                hand_samples += 1
             prev = gray
             frame_idx += 1
             if progress_callback and frame_idx % 10 == 0:
@@ -175,6 +201,10 @@ class FootstepDetector:
         dur = len(energies) / fps
         if dur < 3.0:  # need >= ~3s to lock a gait rhythm
             return []
+        if hand_samples and hand_hits / hand_samples > 0.10:
+            return []  # hands dominate the frame -> not a walking POV
+        if resps and float(np.mean(resps)) > 0.75:
+            return []  # mostly-static camera with localized motion -> not POV walking
 
         def cadence(x, fmin=0.8, fmax=3.0):
             x = np.asarray(x, dtype=float)
@@ -213,6 +243,7 @@ class FootstepDetector:
 
         events = []
         half_win = max(2, int(0.15 * fps))
+        lead = 2  # frames: place the strike just before the dip peak (perceived-sync correction)
         for k in range(n_steps):
             t_k = t0 + k * period
             c = int(round(t_k * fps))
@@ -223,9 +254,10 @@ class FootstepDetector:
             p = lo + int(np.argmax(np.abs(seg - np.mean(seg))))
             conf = float(min(1.0, 0.55 + abs(float(det_v[p])) * 2.0))
             lr = "LEFT" if k % 2 == 0 else "RIGHT"
+            sf = max(0, p - lead)
             events.append(Event(
                 event_id=f"pov_{lr}_{p}", type="footstep",
-                start_sec=p / fps, end_sec=p / fps + 0.25, frame=int(p),
+                start_sec=sf / fps, end_sec=sf / fps + 0.25, frame=int(p),
                 timecode=_smpte(p, fps), confidence=conf,
                 prompt="footsteps on surface, close-mic, foley", duration_hint=0.4,
                 person_id=0))

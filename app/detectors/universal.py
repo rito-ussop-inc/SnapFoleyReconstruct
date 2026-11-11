@@ -32,11 +32,18 @@ class UniversalDetector:
             if lefts >= 2 and rights >= 2:
                 self._release_gpu()
                 return footstep_events
-        # Typing check (hands visible for >15% of video) — cheap MediaPipe Hands
+        # Typing/hands check BEFORE the POV gait fallback — a hands-on-keyboard
+        # clip has rhythmic finger motion that could masquerade as gait otherwise
         typing_events = self.typing.detect(video_path, fps=fps, progress_callback=cb)
         if typing_events:
             self._release_gpu()
             return typing_events
+        # POV walking (feet-only selfie shots): gait-locked rhythm, gated against
+        # static-camera/hands scenes so it can't hijack non-walking clips
+        pov_events = self.footstep.pov_gait_fallback(video_path, fps, cb)
+        if pov_events:
+            self._release_gpu()
+            return pov_events
         # Fallback: motion segmentation (CPU-only, ~50MB RAM)
         motion_events = self._motion_detect(video_path, fps=fps, progress_callback=cb)
         self._release_gpu()
