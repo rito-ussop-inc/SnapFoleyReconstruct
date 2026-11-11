@@ -1,7 +1,5 @@
-// SnapFoley test frontend — talks to local backend only
-const API = location.origin.includes("localhost") || location.origin.includes("127.0.0.1")
-  ? location.origin
-  : "http://127.0.0.1:7860";
+// SnapFoley test frontend — talks to the backend serving this page (works local AND through cloud tunnels)
+const API = location.protocol.startsWith("http") ? location.origin : "http://127.0.0.1:7860";
 
 let taskId = null;
 
