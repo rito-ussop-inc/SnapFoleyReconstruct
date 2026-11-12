@@ -40,6 +40,9 @@ select,input[type=file],input[type=text]{background:#0f141c;color:var(--text);bo
 .clip.amb{background:linear-gradient(90deg,#2dd4a8,#f59e0b)}
 .clip.typing{background:linear-gradient(90deg,#4da3ff,#818cf8)}
 .clip.activity{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.clip.bounce{background:linear-gradient(90deg,#fb923c,#f97316)}
+.clip.punch{background:linear-gradient(90deg,#ef4444,#dc2626)}
+.clip.clap{background:linear-gradient(90deg,#eab308,#facc15)}
 .ed-time,.ed-type{background:#0f141c;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 6px;font-size:12px}
 .ed-gval{font-size:11px;color:var(--muted);margin-left:4px;display:inline-block;min-width:28px}
 .ed-del{padding:2px 8px}

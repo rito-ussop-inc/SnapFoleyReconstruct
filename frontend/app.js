@@ -177,7 +177,7 @@ function renderEditor(){
     <tr>
       <td><input type="number" class="ed-time" data-i="${i}" min="0" max="${videoDuration.toFixed(2)}" step="0.05" value="${ev.start_sec.toFixed(2)}" style="width:100%"></td>
       <td><select class="ed-type" data-i="${i}">
-        ${["footstep","typing","activity","ambience"].map(t => `<option value="${t}" ${t===ev.type?"selected":""}>${t}</option>`).join("")}
+        ${["footstep","typing","activity","bounce","punch","clap","ambience"].map(t => `<option value="${t}" ${t===ev.type?"selected":""}>${t}</option>`).join("")}
       </select></td>
       <td><input type="range" class="ed-gain" data-i="${i}" min="0" max="2" step="0.05" value="${ev.gain}" style="width:90%;vertical-align:middle">
           <span class="ed-gval" data-i="${i}">${ev.gain.toFixed(2)}</span></td>

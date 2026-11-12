@@ -271,6 +271,129 @@ def render_activity(events, duration_sec, sr):
         _place(track, y, int(e.start_sec * sr), random.uniform(0.25, 0.45) * g)
     return track
 
+# ------------------------------------------------- ball bounce & punch hits --
+# Both are physical contact sounds; pure synthesis lets every hit vary
+# naturally (the old generic-bank loop was the "same repetitive sounds" bug).
+
+def _bounce_hit(sr, surface="hard"):
+    """Basketball-style bounce: skin click -> rubber body -> hollow ring -> slap.
+
+    A ball contact is a stiff, short collision: sharp attack, quick pitch drop,
+    a hollow rubber resonance right after, and a faint slap off the floor.
+    """
+    dur = 0.32
+    total = int(sr * dur)
+    y = np.zeros(total, dtype=np.float32)
+
+    # 1. skin/leather click at contact — leads the hit
+    click = _noise_burst(sr, 0.014, 900 * random.uniform(0.85, 1.15),
+                         3800 * random.uniform(0.8, 1.2), tau=0.007, attack=0.0004)
+    y[:len(click)] += click * 0.95
+
+    # 2. rubber body: fast pitch drop, THE bounce signature
+    f1 = 130 * random.uniform(0.92, 1.10)
+    th = _synth_thump(sr, f_start=f1, f_end=f1 * 0.62, dur=0.11, tau=0.020)
+    y[:len(th)] += th * 0.50
+
+    # 3. hollow resonance (ball shell ringing, two detuned modes)
+    f0 = (95 * random.uniform(0.9, 1.1))
+    t3 = np.linspace(0, 0.18, int(sr * 0.18), endpoint=False)
+    ring = (np.sin(2 * np.pi * f0 * t3) + 0.6 * np.sin(2 * np.pi * f0 * 1.22 * t3)) * np.exp(-t3 / 0.045)
+    y[:len(ring)] += ring.astype(np.float32) * 0.45
+
+    # 4. floor slap
+    slap = _noise_burst(sr, 0.032, 400, 1800, tau=0.013)
+    y[:len(slap)] += slap * 0.50
+
+    y = _room_tail(y, sr, dur=0.10, wet=0.07)
+    peak = np.max(np.abs(y))
+    if peak > 1e-9: y = (y / peak * 0.9).astype(np.float32)
+    return y
+
+def _punch_hit(sr, heavy=True):
+    """Boxing punch on a heavy bag: glove slap -> deep thud -> bag wobble.
+
+    A heavy-bag punch is: a short leather slap, a VERY fast low thud (the fist
+    compressing the bag), then the whole bag swinging as a slow damped wave.
+    About a third of punches also rattle the chains.
+    """
+    dur = 0.55 if heavy else 0.35
+    total = int(sr * dur)
+    y = np.zeros(total, dtype=np.float32)
+
+    # 1. glove slap — you hear the leather crack FIRST
+    slap = _noise_burst(sr, 0.024, 500 * random.uniform(0.8, 1.2),
+                        3000 * random.uniform(0.8, 1.2), tau=0.010, attack=0.0006)
+    y[:len(slap)] += slap * 0.95
+
+    # 2. body thud — follows the slap
+    th = _synth_thump(sr, f_start=170 * random.uniform(0.9, 1.12),
+                      f_end=72 * random.uniform(0.9, 1.1), dur=0.10, tau=0.014)
+    y[:len(th)] += th * 0.55
+
+    # 3. bag wobble — big slow damped wave starting right after impact
+    o = int(0.02 * sr)
+    fw = 58 * random.uniform(0.85, 1.15)
+    t3 = np.linspace(0, dur - 0.02, total - o, endpoint=False)
+    wob = np.sin(2 * np.pi * fw * t3) * np.exp(-t3 / 0.16)
+    wob *= (1 - np.minimum(t3 / 0.012, 1.0))          # soft onset
+    y[o:] += wob.astype(np.float32) * 0.35
+
+    # 4. chain rattle on some punches
+    if random.random() < 0.35:
+        o2 = int(random.uniform(0.08, 0.18) * sr)
+        rattle = _noise_burst(sr, 0.12, 1800, 5200, tau=0.05, attack=0.002)
+        y[o2:o2 + len(rattle)] += rattle * 0.12
+
+    y = _room_tail(y, sr, dur=0.16, wet=0.10)
+    peak = np.max(np.abs(y))
+    if peak > 1e-9: y = (y / peak * 0.9).astype(np.float32)
+    return y
+
+def _synth_clap(sr):
+    """Hand clap: two skin slaps with a tiny double-hit."""
+    n = int(sr * 0.22)
+    y = np.zeros(n, dtype=np.float32)
+    for k, (o, g) in enumerate([(0, 1.0), (int(0.012 * sr), 0.5)]):
+        c = _noise_burst(sr, 0.030, 800, 6500, tau=0.009, attack=0.0003)
+        y[o:o + len(c)] += c * g * 0.6
+    y = _room_tail(y, sr, dur=0.09, wet=0.13)
+    peak = np.max(np.abs(y))
+    if peak > 1e-9: y = (y / peak * 0.9).astype(np.float32)
+    return y
+
+def render_bounce(events, duration_sec, sr, prompt=""):
+    total = int(duration_sec * sr)
+    track = np.zeros(total, dtype=np.float32)
+    for i, e in enumerate(events):
+        g = float(getattr(e, "gain", 1.0))
+        if g <= 0: continue
+        y = _bounce_hit(sr)
+        jitter = random.uniform(-0.012, 0.012)
+        _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.8, 1.0) * g)
+    return track
+
+def render_punch(events, duration_sec, sr, prompt=""):
+    total = int(duration_sec * sr)
+    track = np.zeros(total, dtype=np.float32)
+    for i, e in enumerate(events):
+        g = float(getattr(e, "gain", 1.0))
+        if g <= 0: continue
+        y = _punch_hit(sr)
+        jitter = random.uniform(-0.012, 0.012)
+        _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.85, 1.05) * g)
+    return track
+
+def render_clap(events, duration_sec, sr, prompt=""):
+    total = int(duration_sec * sr)
+    track = np.zeros(total, dtype=np.float32)
+    for i, e in enumerate(events):
+        g = float(getattr(e, "gain", 1.0))
+        if g <= 0: continue
+        y = _synth_clap(sr)
+        _place(track, y, int(e.start_sec * sr), random.uniform(0.8, 1.0) * g)
+    return track
+
 def render_ambience(events, duration_sec, sr):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
@@ -309,10 +432,14 @@ def mix_track(events, stem_paths, duration_sec, sr=44100, prompt=""):
     track = np.zeros(total, dtype=np.float32)
     by = lambda t: [e for e in events if e.type == t]
     foot, typ, act, amb = by("footstep"), by("typing"), by("activity"), by("ambience")
+    bou, pnc, clp = by("bounce"), by("punch"), by("clap")
     if foot: track += render_footsteps(foot, duration_sec, sr, prompt)
     if typ:  track += render_typing(typ, duration_sec, sr)
     if act:  track += render_activity(act, duration_sec, sr)
     if amb:  track += render_ambience(amb, duration_sec, sr)
+    if bou:  track += render_bounce(bou, duration_sec, sr, prompt)
+    if pnc:  track += render_punch(pnc, duration_sec, sr, prompt)
+    if clp:  track += render_clap(clp, duration_sec, sr, prompt)
     peak = np.max(np.abs(track))
     if peak > 1e-6: track = (track / peak * 0.85).astype(np.float32)
     return track

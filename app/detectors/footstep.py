@@ -146,6 +146,37 @@ class FootstepDetector:
         events = sorted(events, key=lambda e: e.frame)
         return events
 
+    def ball_present(self, video_path: str, samples: int = 20, conf: float = 0.10) -> float:
+        """Fraction of sampled frames containing a sports ball (YOLO COCO class 32).
+
+        Used as a hard gate: a visible ball means hands-on-ball play (dribbling,
+        juggling), which must never be classified as typing or walking.
+        """
+        if self._yolo is None:
+            self._load()
+        if self._yolo is None:
+            return 0.0
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened(): return 0.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        hits, seen = 0, 0
+        for idx in np.linspace(0, max(0, total - 1), samples).astype(int):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ok, frame = cap.read()
+            if not ok: continue
+            seen += 1
+            try:
+                res = self._yolo.predict(frame, conf=conf, verbose=False)[0]
+                for box in res.boxes:
+                    cls = int(box.cls[0]) if hasattr(box, "cls") else -1
+                    if cls == 32:  # COCO: sports ball
+                        hits += 1
+                        break
+            except Exception:
+                continue
+        cap.release()
+        return (hits / seen) if seen else 0.0
+
     def pov_gait_fallback(self, video_path: str, fps: float, progress_callback=None) -> list[Event]:
         """Detect footsteps in POV walking videos via gait-rhythm locking.
 

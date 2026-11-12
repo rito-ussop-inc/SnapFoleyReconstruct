@@ -157,17 +157,22 @@ def process(task_id: str, background_tasks: BackgroundTasks):
 
 def _fallback_prompt(events) -> str:
     """Sound-design label derived from what was actually DETECTED (VLM is off on 8GB)."""
-    types = {e.type for e in events}
+    types = set(e.type for e in events)
     n = {t: sum(1 for e in events if e.type == t) for t in types}
-    if "typing" in types and "footstep" not in types:
+    top = max(n, key=n.get) if n else "none"
+    if top == "typing":
         return "laptop keyboard typing, close-mic, foley"
-    if "footstep" in types and "typing" not in types:
+    if top == "bounce":
+        return "basketball dribbles and ball bounces, close-mic, foley"
+    if top == "punch":
+        return "gloved punches hitting a heavy bag, close-mic, foley"
+    if top == "clap":
+        return "hand claps, close-mic, foley"
+    if top == "footstep":
         return "footsteps on surface, close-mic, foley"
-    if "footstep" in types and "typing" in types:
-        return "footsteps and keyboard typing, close-mic, foley"
-    if "ambience" in types:
+    if top == "ambience":
         return "ambient room tone, soft foley"
-    if "activity" in types:
+    if top == "activity":
         return "motion impacts and foley hits, close-mic"
     return "video foley, close-mic"
 
@@ -300,14 +305,18 @@ def download_audio_video(task_id: str):
 
 # ---- manual editor (re-render audio from edited events, no re-detection) ----
 
-VALID_TYPES = {"footstep", "typing", "activity", "ambience"}
+VALID_TYPES = {"footstep", "typing", "activity", "ambience", "bounce", "punch", "clap"}
 _TYPE_PROMPT = {
     "footstep": "footsteps on surface, close-mic, foley",
     "typing":   "laptop keyboard typing, close-mic, foley",
     "activity": "motion impact hit, close-mic, foley",
     "ambience": "soft room ambience, indoor foley",
+    "bounce":   "ball bounce impact, close-mic, foley",
+    "punch":    "punch impact on heavy bag, foley",
+    "clap":     "hand clap, close-mic, foley",
 }
-_TYPE_DUR = {"footstep": 0.4, "typing": 0.12, "activity": 0.35, "ambience": 1.0}
+_TYPE_DUR = {"footstep": 0.4, "typing": 0.12, "activity": 0.35, "ambience": 1.0,
+             "bounce": 0.35, "punch": 0.5, "clap": 0.3}
 
 class RemixEvent(BaseModel):
     event_id: Optional[str] = None

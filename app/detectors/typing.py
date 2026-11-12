@@ -64,18 +64,31 @@ class TypingDetector:
                 progress_callback(min(frame_idx / total, 1.0))
             frame_idx += 1
         cap.release()
-        if not presence or float(np.mean(presence)) < 0.15:
+        if not presence or float(np.mean(presence)) < 0.40:
             return []  # hands not a consistent subject -> not a typing/hands clip
+            # (0.40: real typing keeps hands in frame ~always; far/small fast
+            #  hands like ball play only appear in a small fraction of frames)
         mv = np.asarray(motions, dtype=float)
         mv_s = np.convolve(mv, np.ones(3) / 3, mode="same")
         active = mv_s[mv_s > 0]
         if active.size == 0:
+            return []
+        # Hands that TRAVEL far per frame are swinging arms (juggling, waving,
+        # ball play) — typing keystrikes are tiny fingertip excursions. Reject
+        # before find_peaks so arm-swing rhythm can't masquerade as keystrikes.
+        if float(np.percentile(mv_s, 90)) > 0.035 or float(np.median(active)) > 0.015:
             return []
         from scipy.signal import find_peaks
         prom = max(0.01, float(np.percentile(active, 50)) * 0.6)
         peaks, props = find_peaks(mv_s, prominence=prom, distance=max(2, int(fps * 0.08)))
         if len(peaks) < 6:
             return []  # hands visible but no strike rhythm (resting/holding)
+        # Strike DENSITY: real typing produces several strikes a second. A few
+        # peaks spread across the whole clip (~0.3-1/s) is ball play, gestures
+        # or camera jitter — reject so it can't masquerade as keystrikes.
+        span = max((peaks[-1] - peaks[0]) / fps, 1e-3)
+        if len(peaks) / span < 1.2:
+            return []
         proms = props.get("prominences", [0.05] * len(peaks))
         events = []
         for i, p in enumerate(peaks):
