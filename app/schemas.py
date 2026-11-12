@@ -4,7 +4,7 @@ from typing import List, Optional
 
 class Event(BaseModel):
     event_id: str = Field(default="", description="unique id")
-    type: str = Field(default="footstep", description="footstep|door_creak|car_pass|splash|ambience|generic")
+    type: str = Field(default="footstep", description="footstep|typing|activity|ambience")
     start_sec: float = 0.0
     end_sec: float = 0.0
     frame: int = 0
@@ -13,6 +13,7 @@ class Event(BaseModel):
     prompt: str = ""          # text prompt for retrieval/generation
     duration_hint: float = 0.5
     person_id: Optional[int] = None
+    gain: float = Field(default=1.0, description="manual volume multiplier (editor)")
 
 class Clip(BaseModel):
     event_id: str

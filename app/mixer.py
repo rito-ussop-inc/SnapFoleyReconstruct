@@ -75,6 +75,157 @@ def _vary(y: np.ndarray, pitch_range=0.07) -> np.ndarray:
     n = max(1, int(len(y) / shift))
     return np.interp(np.linspace(0, len(y) - 1, n), np.arange(len(y)), y).astype(np.float32)
 
+# ------------------------------------------------------------ footstep v3 --
+# A real footstep is THREE layers, not one sample:
+#   1. body thump   — the weight of the person dropping into the ground
+#                     (60-150Hz pitch-dropping sine, the part you FEEL)
+#   2. surface      — the contact: heel click + material crunch (the sample)
+#   3. scuff        — a short noise swish just BEFORE impact (the foot plant)
+# plus a tiny room tail so it doesn't sound dry/game-y.
+
+try:
+    from scipy.signal import butter, sosfiltfilt, fftconvolve
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
+
+def _band(y, sr, kind, f1, f2=None, order=2):
+    """Zero-phase band filter; kind in {high, low, band}."""
+    if not _HAS_SCIPY or len(y) < 32: return y
+    try:
+        fs = sr / 2.0
+        if kind == "high":
+            sos = butter(order, min(f1, fs * 0.95) / fs, btype="high", output="sos")
+        elif kind == "low":
+            sos = butter(order, min(f1, fs * 0.95) / fs, btype="low", output="sos")
+        else:
+            lo, hi = sorted((min(f1, fs * 0.95), min(f2 or f1 * 3, fs * 0.95)))
+            sos = butter(order, [lo / fs, hi / fs], btype="band", output="sos")
+        return sosfiltfilt(sos, y).astype(np.float32)
+    except Exception:
+        return y
+
+def _synth_thump(sr, f_start=120.0, f_end=52.0, dur=0.20, tau=0.030):
+    """Weight-drop thump: pitch falls fast, amplitude decays — the 'body' of a step."""
+    n = int(sr * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    f = f_start + (f_end - f_start) * (1 - np.exp(-t / tau)) / (1 - np.exp(-dur / tau))
+    phase = 2 * np.pi * np.cumsum(f) / sr
+    env = np.exp(-t / 0.055)
+    y = np.sin(phase) * env
+    # soften the very onset (a real foot doesn't click on)
+    a = int(0.004 * sr)
+    y[:a] *= np.linspace(0.3, 1.0, a)
+    return y.astype(np.float32)
+
+def _synth_scuff(sr, dur=0.055):
+    """The swish of the foot planting: bandpassed noise, fast attack."""
+    n = int(sr * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    y = np.random.randn(n).astype(np.float32)
+    y = _band(y, sr, "band", 700, 5200)
+    env = np.minimum(t / 0.008, 1.0) * np.exp(-t / 0.02)
+    return (y * env).astype(np.float32)
+
+_SURFACE_SHAPE = {   # how the contact sample is voiced per material
+    "concrete": dict(kind="high", f=320,  g=0.95),
+    "grass":    dict(kind="low",  f=2400, g=0.85),
+    "wood":     dict(kind="band", f=200,  f2=1100, g=1.0),
+    "carpet":   dict(kind="low",  f=1100, g=0.55),
+    "snow":     dict(kind="low",  f=1800, g=0.80),
+}
+
+# Per-material voicing of the SYNTHESIZED contact layers. The bundled CC0
+# samples are dull low thuds (fine for texture), so the identity of a real
+# step — sharp heel click + surface crunch — is synthesized per material.
+_HIT_PARAMS = {
+    "concrete": dict(thump=(115, 60, 0.40), click=(1500, 7500, 0.50), crunch=(300, 4000, 0.35),
+                     sample_g=0.25, room=0.12),
+    "wood":     dict(thump=(100, 55, 0.45), click=(800, 4500, 0.45),  crunch=(250, 2200, 0.30),
+                     sample_g=0.30, room=0.12),
+    "grass":    dict(thump=(85, 45, 0.50),  click=(700, 3500, 0.20),  crunch=(300, 2500, 0.40),
+                     sample_g=0.30, room=0.07),
+    "carpet":   dict(thump=(70, 40, 0.55),  click=(500, 2500, 0.10),  crunch=(250, 1000, 0.20),
+                     sample_g=0.20, room=0.05),
+    "snow":     dict(thump=(75, 40, 0.50),  click=(600, 3000, 0.25),  crunch=(300, 2000, 0.35),
+                     sample_g=0.25, room=0.06),
+}
+
+def _noise_burst(sr, dur, f_lo, f_hi, tau, attack=0.004):
+    """Bandpassed noise burst with fast attack + exponential decay."""
+    n = int(sr * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    y = np.random.randn(n).astype(np.float32)
+    y = _band(y, sr, "band", f_lo, f_hi)
+    env = np.minimum(t / max(attack, 1e-4), 1.0) * np.exp(-t / tau)
+    return (y * env).astype(np.float32)
+
+def _room_tail(y, sr, dur=0.13, wet=0.11):
+    """Tiny exponential room tail — dry game samples sound fake without it."""
+    if not _HAS_SCIPY or len(y) < 64: return y
+    n = int(sr * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    ir = np.random.randn(n).astype(np.float32) * np.exp(-t / 0.03)
+    ir = _band(ir, sr, "low", 3200)
+    ir /= (np.max(np.abs(ir)) + 1e-9)
+    tail = fftconvolve(y, ir)[: len(y)]
+    return (y * (1 - wet) + tail * wet).astype(np.float32)
+
+def _footstep_hit(sr, surface, sample_path=None):
+    """One complete footstep: scuff -> heel click + crunch + body thump -> texture."""
+    p = _HIT_PARAMS.get(surface, _HIT_PARAMS["concrete"])
+    dur = 0.42
+    total = int(sr * dur)
+    y = np.zeros(total, dtype=np.float32)
+
+    # 0. scuff, ~30ms BEFORE the impact instant (t=0 is the impact)
+    sc = _synth_scuff(sr)
+    o = int(0.030 * sr)
+    y[o:o + len(sc)] += sc * 0.25
+
+    # 1. heel click — the sharp strike transient (a few ms, wide band)
+    cl_lo, cl_hi, cl_g = p["click"]
+    click = _noise_burst(sr, 0.012, cl_lo * random.uniform(0.85, 1.15),
+                         cl_hi * random.uniform(0.8, 1.2), tau=0.006, attack=0.0005)
+    y[:len(click)] += click * cl_g
+
+    # 2. surface crunch — material grit right after the strike
+    cr_lo, cr_hi, cr_g = p["crunch"]
+    crunch = _noise_burst(sr, 0.075, cr_lo * random.uniform(0.8, 1.2),
+                          cr_hi * random.uniform(0.8, 1.2), tau=0.022)
+    y[:len(crunch)] += crunch * cr_g
+
+    # 3. body thump at the impact
+    f1, f2, tg = p["thump"]
+    th = _synth_thump(sr, f_start=f1 * random.uniform(0.9, 1.15),
+                      f_end=f2 * random.uniform(0.9, 1.1),
+                      tau=0.030 * random.uniform(0.85, 1.2))
+    y[:len(th)] += th * tg
+
+    # heel-toe: a second, smaller weight transfer shortly after (60% of steps)
+    if random.random() < 0.6:
+        o2 = int(random.uniform(0.055, 0.085) * sr)
+        th2 = _synth_thump(sr, f_start=f1 * 0.8, f_end=f2 * 0.9, dur=0.14, tau=0.024)
+        y[o2:o2 + len(th2)] += th2 * tg * 0.45
+        y[o2:o2 + len(click)] += click * cl_g * 0.25
+
+    # 4. sample texture — the CC0 recording, quiet, adds sole/floor character
+    if sample_path is not None and p["sample_g"] > 0:
+        s = _load_sample(sample_path, sr)
+        n = min(len(s), int(0.16 * sr))
+        s = _vary(s[:n].copy(), 0.08)
+        y[:len(s)] += s * p["sample_g"] * random.uniform(0.7, 1.1)
+
+    y = _room_tail(y, sr, wet=p["room"])
+    peak = np.max(np.abs(y))
+    if peak > 1e-9:
+        y = (y / peak * 0.92).astype(np.float32)
+    return y
+
+def _synth_step(sr=44100):
+    """Procedural footstep fallback (kept for QA/imports): delegates to v3 hit."""
+    return _footstep_hit(sr, "concrete", None)
+
 # ---------------------------------------------------------------- renderers --
 
 def render_footsteps(events, duration_sec, sr, prompt=""):
@@ -83,28 +234,30 @@ def render_footsteps(events, duration_sec, sr, prompt=""):
     surface = map_surface(prompt)
     files = _bank_files("footsteps", surface)
     for i, e in enumerate(events):
-        if files:
-            y = _vary(_load_sample(files[i % len(files)], sr))
-        else:
-            y = _vary(_synth_step(sr))
-        jitter = random.uniform(-0.02, 0.02)
-        _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.65, 1.0))
+        g = float(getattr(e, "gain", 1.0))
+        if g <= 0: continue
+        y = _footstep_hit(sr, surface, files[i % len(files)] if files else None)
+        jitter = random.uniform(-0.015, 0.015)
+        _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.8, 1.0) * g)
     return track
 
 def render_typing(events, duration_sec, sr):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
     if not events: return track
+    gains = [float(getattr(e, "gain", 1.0)) for e in events]
+    ag = float(np.mean(gains)) if gains else 1.0
     click = _synth_key_click(sr)
     t0 = min(e.start_sec for e in events)
     t1 = min(max((e.end_sec if e.end_sec and e.end_sec > e.start_sec else e.start_sec + 0.5)
                  for e in events), duration_sec)
     t = t0
     while t < t1 - 0.05:
-        _place(track, click, int(t * sr), random.uniform(0.25, 0.5))
+        _place(track, click, int(t * sr), random.uniform(0.25, 0.5) * ag)
         t += random.uniform(0.13, 0.30)
-    for e in events:  # accents on detected strikes
-        _place(track, click, int(e.start_sec * sr), 0.65)
+    for e, g in zip(events, gains):  # accents on detected strikes
+        if g <= 0: continue
+        _place(track, click, int(e.start_sec * sr), 0.65 * g)
     return track
 
 def render_activity(events, duration_sec, sr):
@@ -112,29 +265,34 @@ def render_activity(events, duration_sec, sr):
     track = np.zeros(total, dtype=np.float32)
     files = _bank_files("impacts")
     for i, e in enumerate(events):
+        g = float(getattr(e, "gain", 1.0))
+        if g <= 0: continue
         y = _vary(_load_sample(files[i % len(files)], sr), 0.06) if files else _vary(_synth_step(sr), 0.06)
-        _place(track, y, int(e.start_sec * sr), random.uniform(0.25, 0.45))
+        _place(track, y, int(e.start_sec * sr), random.uniform(0.25, 0.45) * g)
     return track
 
 def render_ambience(events, duration_sec, sr):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
     if not events: return track
-    t0 = max(0.0, min(e.start_sec for e in events))
-    t1 = min(duration_sec, max((e.end_sec if e.end_sec > e.start_sec else e.start_sec + 1.0) for e in events))
-    if t1 <= t0: return track
-    n = int((t1 - t0) * sr)
     rng = np.random.default_rng(7)
-    noise = rng.standard_normal(n).astype(np.float32)
-    # crude lowpass -> soft room tone
-    k = 9
-    noise = np.convolve(noise, np.ones(k) / k, mode="same")
-    fade = int(0.5 * sr)
-    env = np.ones(n, dtype=np.float32)
-    if n > 2 * fade:
-        env[:fade] = np.linspace(0, 1, fade)
-        env[-fade:] = np.linspace(1, 0, fade)
-    track[int(t0 * sr):int(t0 * sr) + n] += noise * env * 0.05
+    for e in events:
+        g = float(getattr(e, "gain", 1.0))
+        if g <= 0: continue
+        t0 = max(0.0, e.start_sec)
+        t1 = min(duration_sec, e.end_sec if e.end_sec > e.start_sec else e.start_sec + 1.0)
+        if t1 <= t0: continue
+        n = int((t1 - t0) * sr)
+        noise = rng.standard_normal(n).astype(np.float32)
+        # crude lowpass -> soft room tone
+        k = 9
+        noise = np.convolve(noise, np.ones(k) / k, mode="same")
+        fade = int(0.5 * sr)
+        env = np.ones(n, dtype=np.float32)
+        if n > 2 * fade:
+            env[:fade] = np.linspace(0, 1, fade)
+            env[-fade:] = np.linspace(1, 0, fade)
+        track[int(t0 * sr):int(t0 * sr) + n] += noise * env * 0.05 * g
     return track
 
 # ------------------------------------------------------------------ public --
@@ -158,16 +316,6 @@ def mix_track(events, stem_paths, duration_sec, sr=44100, prompt=""):
     peak = np.max(np.abs(track))
     if peak > 1e-6: track = (track / peak * 0.85).astype(np.float32)
     return track
-
-def _synth_step(sr=44100):
-    """Procedural footstep fallback: heel thump + surface crunch."""
-    dur = 0.09
-    t = np.linspace(0, dur, int(sr * dur), endpoint=False)
-    thump = np.sin(2 * np.pi * (90 * np.exp(-t * 30)) * t) * np.exp(-t * 45)
-    crunch = np.random.randn(len(t)) * np.exp(-t * 35)
-    y = 0.6 * thump + 0.5 * crunch
-    y /= (np.max(np.abs(y)) + 1e-9)
-    return y.astype(np.float32)
 
 def _synth_key_click(sr=44100):
     """Dual-transient mechanical key click (down + softer up)."""

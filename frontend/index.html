@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>SnapFoley — Local Studio (test frontend)</title>
+<title>SnapFoley — Video Foley Studio</title>
 <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
     <span class="logo">🎧</span>
     <div>
       <h1>SnapFoley <span class="tag-local">LOCAL</span></h1>
-      <p class="sub">Zero-shot video-to-foley • fully offline • i5 / RTX 2050 tuned</p>
+      <p class="sub">Automatic foley for any video • fully offline • i5 / RTX 2050 tuned</p>
     </div>
   </div>
   <div class="health" id="healthBadge">checking backend…</div>
@@ -54,12 +54,12 @@
   <!-- RIGHT: Results -->
   <section class="card">
     <h2>2. Results</h2>
-    <div id="empty">Upload a video to see footstep events + timeline.</div>
+    <div id="empty">Upload a video — SnapFoley watches it, detects every action, and generates matching foley sound.</div>
     <div id="results" class="hidden">
       <div class="row stats">
         <div class="stat"><span id="statEvents">0</span><small>events</small></div>
         <div class="stat"><span id="statDuration">0s</span><small>duration</small></div>
-        <div class="stat"><span id="statPrompt">—</span><small>VLM prompt</small></div>
+        <div class="stat"><span id="statPrompt">—</span><small>sound design</small></div>
       </div>
 
       <h3>Timeline</h3>
@@ -68,7 +68,7 @@
       <h3>Events</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>#</th><th>Time</th><th>Foot</th><th>Type</th><th>Conf</th></tr></thead>
+          <thead><tr><th>#</th><th>Time</th><th>Detail</th><th>Type</th><th>Conf</th></tr></thead>
           <tbody id="eventsBody"></tbody>
         </table>
       </div>
@@ -85,7 +85,22 @@
           <button class="btn" id="jsonBtn">Download JSON</button>
           <button class="btn ghost" id="resetBtn">Reset</button>
         </div>
-       </div>
+      </div>
+
+      <h3>3. Edit sounds</h3>
+      <p class="hint">Move a sound in time, change what it is, set its volume, delete or add — then re-render.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th style="width:34%">Time (s)</th><th>Sound</th><th style="width:26%">Volume</th><th></th></tr></thead>
+          <tbody id="editBody"></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <button class="btn ghost" id="addEventBtn" disabled>＋ Add sound at playhead</button>
+        <button class="btn primary" id="applyMixBtn" disabled>✓ Re-render audio with my edits</button>
+      </div>
+      <p class="mono" id="editStatus"></p>
+
       <p class="hint">Stems are local (CLAP retrieval). Audio is generated locally and muxed with ffmpeg.</p>
     </div>
 

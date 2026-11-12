@@ -33,12 +33,17 @@ class LocalVLM:
             print(f"[VLM] not loaded (optional): {e}")
             self._model = None
 
-    def describe_video(self, video_path: str, max_frames: int = 3) -> str:
-        """Return prompt like 'wooden door creak, indoor'. Fallback if model missing."""
+    def describe_video(self, video_path: str, max_frames: int = 3, fallback: str = "") -> str:
+        """Return a prompt like 'wooden door creak, indoor'.
+
+        The VLM is optional (off by default on 8GB RAM). When it's off we use the
+        caller's `fallback`, which the pipeline derives from the DETECTED event
+        types — so a typing video says typing, a walking video says footsteps.
+        """
         try:
             self._load()
             if self._model is None:
-                return "footsteps on surface, close-mic, foley"
+                return fallback or "video foley, close-mic"
             cap = cv2.VideoCapture(str(video_path))
             frames = []
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
@@ -48,12 +53,12 @@ class LocalVLM:
                 if ok: frames.append(f)
             cap.release()
             if not frames:
-                return "footsteps on surface, close-mic, foley"
+                return fallback or "video foley, close-mic"
             # Placeholder inference — real code uses processor + prompt
-            return "footsteps on surface, close-mic, foley"
+            return fallback or "video foley, close-mic"
         except Exception as e:
             print(f"[VLM] describe failed: {e}")
-            return "footsteps on surface, close-mic, foley"
+            return fallback or "video foley, close-mic"
 
-    def describe_image(self, image_path: str) -> str:
-        return "footsteps on surface, close-mic, foley"
+    def describe_image(self, image_path: str, fallback: str = "") -> str:
+        return fallback or "video foley, close-mic"

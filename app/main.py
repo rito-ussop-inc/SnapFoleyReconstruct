@@ -6,7 +6,7 @@ No remote API, no web download, no keys. Offline-first.
 import os, json, time, re, tempfile, shutil, subprocess, base64
 from datetime import datetime
 from io import BytesIO
-from typing import Optional
+from typing import Optional, List
 import pandas as pd
 import cv2, numpy as np
 
@@ -155,6 +155,22 @@ def process(task_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(_process_task, task_id)
     return {"task_id": task_id, "status": "processing"}
 
+def _fallback_prompt(events) -> str:
+    """Sound-design label derived from what was actually DETECTED (VLM is off on 8GB)."""
+    types = {e.type for e in events}
+    n = {t: sum(1 for e in events if e.type == t) for t in types}
+    if "typing" in types and "footstep" not in types:
+        return "laptop keyboard typing, close-mic, foley"
+    if "footstep" in types and "typing" not in types:
+        return "footsteps on surface, close-mic, foley"
+    if "footstep" in types and "typing" in types:
+        return "footsteps and keyboard typing, close-mic, foley"
+    if "ambience" in types:
+        return "ambient room tone, soft foley"
+    if "activity" in types:
+        return "motion impacts and foley hits, close-mic"
+    return "video foley, close-mic"
+
 def _process_task(task_id: str):
     t = tasks[task_id]
     try:
@@ -162,7 +178,7 @@ def _process_task(task_id: str):
         events = detector.detect(t["video_path"], progress_callback=lambda p: t.update(progress=p))
         t["events"] = [e.dict() for e in events]
         # local VLM prompt enrichment (fast path — fallback string if model not cached)
-        prompt = vlm.describe_video(t["video_path"])
+        prompt = vlm.describe_video(t["video_path"], fallback=_fallback_prompt(events))
         stems = []
         for ev in events:
             # per-event prompt (footstep vs activity/ambience), fall back to VLM prompt
@@ -218,7 +234,7 @@ def export_csv(task_id: str):
     df = pd.DataFrame(tasks[task_id].get("events", []))
     buf = BytesIO(); df.to_csv(buf, index=False)
     buf.seek(0)
-    return StreamingResponse(buf, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=footsteps_{task_id}.csv"})
+    return StreamingResponse(buf, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=snapfoley_events_{task_id}.csv"})
 
 @app.get("/api/export-json/{task_id}")
 def export_json(task_id: str):
@@ -233,7 +249,7 @@ def gen_audio_video(task_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(_gen_final, task_id)
     return {"task_id": task_id, "message": "final video started"}
 
-def _gen_final(task_id: str):
+def _gen_final(task_id: str, annotate: bool = True):
     from app.schemas import Event
     t = tasks[task_id]
     try:
@@ -245,10 +261,13 @@ def _gen_final(task_id: str):
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         cap.release()
         duration = total / fps
-        # 1. annotated temp
-        annotated = tempfile.mktemp(suffix="_annotated.mp4")
-        ok = create_annotated_video(video_path, evs, annotated)
-        if not ok: raise RuntimeError("annotate failed")
+        # 1. annotated temp (editor remixes skip this — the user wants clean video)
+        if annotate:
+            annotated = tempfile.mktemp(suffix="_annotated.mp4")
+            ok = create_annotated_video(video_path, evs, annotated)
+            if not ok: raise RuntimeError("annotate failed")
+        else:
+            annotated = video_path
         # 2. audio track
         audio_track = mixer.mix_track(evs, stems, duration, sr=44100, prompt=t.get("prompt", ""))
         # 3. merge (fallback to annotated if ffmpeg missing on this host)
@@ -278,6 +297,73 @@ def download_audio_video(task_id: str):
     p = t.get("final_path")
     if not p or not os.path.exists(p): raise HTTPException(404, "File missing")
     return FileResponse(p, media_type="video/mp4", filename=f"snapfoley_{task_id}.mp4")
+
+# ---- manual editor (re-render audio from edited events, no re-detection) ----
+
+VALID_TYPES = {"footstep", "typing", "activity", "ambience"}
+_TYPE_PROMPT = {
+    "footstep": "footsteps on surface, close-mic, foley",
+    "typing":   "laptop keyboard typing, close-mic, foley",
+    "activity": "motion impact hit, close-mic, foley",
+    "ambience": "soft room ambience, indoor foley",
+}
+_TYPE_DUR = {"footstep": 0.4, "typing": 0.12, "activity": 0.35, "ambience": 1.0}
+
+class RemixEvent(BaseModel):
+    event_id: Optional[str] = None
+    type: str = "activity"
+    start_sec: float = 0.0
+    gain: float = 1.0
+
+class RemixRequest(BaseModel):
+    events: List[RemixEvent]
+
+def _timecode(sec: float, fps: float) -> str:
+    ts = max(0.0, sec)
+    return f"{int(ts//3600):02d}:{int((ts%3600)//60):02d}:{int(ts%60):02d}:{int((ts*fps)%fps):02d}"
+
+@app.post("/api/remix/{task_id}")
+def remix(task_id: str, req: RemixRequest, background_tasks: BackgroundTasks):
+    """Apply manually edited events (time/type/volume, added & deleted) and
+    re-render the audio. Skips detection AND annotation — usually a few seconds."""
+    if task_id not in tasks: raise HTTPException(404, "Task not found")
+    t = tasks[task_id]
+    if t["status"] != "completed": raise HTTPException(400, "Process the video first")
+    if t.get("final_generating"): raise HTTPException(409, "Still rendering — try again in a moment")
+    cap = cv2.VideoCapture(t["video_path"])
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    cap.release()
+    duration = total / fps
+
+    from app.schemas import Event
+    evs = []
+    for i, r in enumerate(req.events):
+        etype = r.type if r.type in VALID_TYPES else "activity"
+        start = float(min(max(r.start_sec, 0.0), duration))
+        ev = Event(
+            event_id=r.event_id or f"edit_{i:04d}_{os.urandom(2).hex()}",
+            type=etype, start_sec=start, end_sec=start + _TYPE_DUR[etype],
+            frame=int(start * fps), timecode=_timecode(start, fps),
+            confidence=0.9, prompt=_TYPE_PROMPT[etype],
+            duration_hint=_TYPE_DUR[etype], gain=float(min(max(r.gain, 0.0), 2.0)))
+        evs.append(ev)
+    evs.sort(key=lambda e: e.start_sec)
+
+    stems = []
+    for ev in evs:
+        path, score = retriever.search(ev.prompt)
+        stems.append({"event_id": ev.event_id, "stem_path": path or "", "backend": "retrieval", "score": score,
+                      "loop": ev.type == "ambience", "gain_db": 0.0, "fade_in": 0.05})
+
+    t["events"] = [e.dict() for e in evs]
+    t["stems"] = stems
+    t["prompt"] = _fallback_prompt(evs)
+    tl = mixer.build_timeline(task_id, evs, [_as_clip(s) for s in stems], duration_sec=duration)
+    t["timeline"] = tl.dict()
+    t["final_ready"] = False; t["final_generating"] = True; t.pop("final_error", None)
+    background_tasks.add_task(_gen_final, task_id, False)
+    return {"task_id": task_id, "status": "remixing", "events": len(evs)}
 
 # Serve the test frontend (same origin, no CORS issues)
 frontend_dir = Path(__file__).parent.parent / "frontend"

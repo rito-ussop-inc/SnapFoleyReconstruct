@@ -38,6 +38,11 @@ select,input[type=file],input[type=text]{background:#0f141c;color:var(--text);bo
 .timeline{height:56px;background:#0d1117;border:1px solid var(--line);border-radius:12px;position:relative;overflow:hidden}
 .clip{position:absolute;top:8px;height:34px;background:linear-gradient(90deg,var(--acc),#5eead4);border-radius:8px;opacity:.9}
 .clip.amb{background:linear-gradient(90deg,#2dd4a8,#f59e0b)}
+.clip.typing{background:linear-gradient(90deg,#4da3ff,#818cf8)}
+.clip.activity{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.ed-time,.ed-type{background:#0f141c;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 6px;font-size:12px}
+.ed-gval{font-size:11px;color:var(--muted);margin-left:4px;display:inline-block;min-width:28px}
+.ed-del{padding:2px 8px}
 .table-wrap{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:12px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
