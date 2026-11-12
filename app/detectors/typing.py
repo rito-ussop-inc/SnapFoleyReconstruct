@@ -83,12 +83,10 @@ class TypingDetector:
         peaks, props = find_peaks(mv_s, prominence=prom, distance=max(2, int(fps * 0.08)))
         if len(peaks) < 6:
             return []  # hands visible but no strike rhythm (resting/holding)
-        # Strike DENSITY: real typing produces several strikes a second. A few
-        # peaks spread across the whole clip (~0.3-1/s) is ball play, gestures
-        # or camera jitter — reject so it can't masquerade as keystrikes.
-        span = max((peaks[-1] - peaks[0]) / fps, 1e-3)
-        if len(peaks) / span < 1.2:
-            return []
+        # NOTE: no strike-rate gate. Real typing is BURSTY (type, pause, type):
+        # a 30s clip of burst typing measures <1 peak/s overall. Videos with
+        # sparse hand presence are already rejected by the presence gate above,
+        # so a rate gate here only killed real typing.
         proms = props.get("prominences", [0.05] * len(peaks))
         events = []
         for i, p in enumerate(peaks):

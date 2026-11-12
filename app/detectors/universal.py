@@ -53,7 +53,12 @@ class UniversalDetector:
                 return pov_events
         # Fallback: motion segmentation (CPU-only, ~50MB RAM) + impact classifier
         motion_events, curves = self._motion_detect(video_path, fps=fps, progress_callback=cb)
-        events = self._classify_impacts(motion_events, curves, ball_ratio, fps)
+        # _motion_detect reads the video's TRUE fps (container metadata can
+        # disagree with the default) — the classifier must divide frame
+        # indices by the SAME fps or every impact time is scaled wrong
+        # (e.g. a 25fps file tagged 30fps made all bounces fire ~20% early).
+        true_fps = float(curves.get("fps") or fps)
+        events = self._classify_impacts(motion_events, curves, ball_ratio, true_fps)
         self._release_gpu()
         return events
 
@@ -87,6 +92,10 @@ class UniversalDetector:
             if lp is not None:
                 out = []
                 for i, p in enumerate(lp):
+                    # NOTE: events stay ON the lower-frame energy peaks. The
+                    # hump peaks sit within ~±0.1s of the visible floor contact
+                    # (descent is fast, contact, ascent), while the trough
+                    # AFTER the hump is the inter-dribble pause — NOT contact.
                     sec = float(p / fps)
                     out.append(Event(event_id=f"bou_{i:04d}", type="bounce",
                                      start_sec=sec, end_sec=sec + 0.35, frame=int(p),
@@ -160,7 +169,7 @@ class UniversalDetector:
         cap.release()
         if not motion_vals:
             return [], {}
-        curves = {"lower": np.asarray(lower_vals, dtype=float)}
+        curves = {"lower": np.asarray(lower_vals, dtype=float), "fps": float(fps)}
         # smooth energy, find peaks = activity bursts
         try:
             from scipy.signal import find_peaks
