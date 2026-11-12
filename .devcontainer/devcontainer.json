@@ -11,6 +11,7 @@
     "memory": "8gb"
   },
   "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "nohup bash start_snapfoley.sh > /tmp/snapfoley.log 2>&1 < /dev/null; exit 0",
   "forwardPorts": [7860],
   "portsAttributes": {
     "7860": {
