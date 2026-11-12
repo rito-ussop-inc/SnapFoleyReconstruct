@@ -260,15 +260,52 @@ def render_typing(events, duration_sec, sr):
         _place(track, click, int(e.start_sec * sr), 0.65 * g)
     return track
 
+def _impact_hit(sr, kind=None):
+    """Generic foley impact for 'activity' events — 3 physical models so
+    unrelatable videos get varied, plausible hits instead of one bank loop."""
+    kind = kind or random.choice(["solid", "wood", "metal"])
+    dur = random.uniform(0.18, 0.30)
+    total = int(sr * dur)
+    y = np.zeros(total, dtype=np.float32)
+    if kind == "solid":
+        # dense thud against a hard surface (wall, ground, body slam)
+        th = _synth_thump(sr, f_start=random.uniform(90, 150), f_end=random.uniform(40, 60),
+                          dur=dur * 0.6, tau=random.uniform(0.02, 0.035))
+        y[:len(th)] += th * 0.8
+        c = _noise_burst(sr, 0.012, random.uniform(600, 1200), random.uniform(2500, 4500), tau=0.006)
+        y[:len(c)] += c * 0.35
+    elif kind == "wood":
+        # woody knock: mid-band resonance, very short decay
+        f0 = random.uniform(160, 320)
+        t3 = np.linspace(0, dur, total, endpoint=False)
+        y[:len(t3)] += (np.sin(2 * np.pi * f0 * t3) * np.exp(-t3 / 0.045)).astype(np.float32) * 0.5
+        c = _noise_burst(sr, 0.010, 800, 5000, tau=0.005)
+        y[:len(c)] += c * 0.5
+        th = _synth_thump(sr, f_start=110, f_end=55, dur=0.08, tau=0.018)
+        y[:len(th)] += th * 0.45
+    else:  # metal — several detuned partials, ringing
+        base = random.uniform(400, 900)
+        t3 = np.linspace(0, dur, total, endpoint=False)
+        ring = np.zeros(total, dtype=np.float32)
+        for ratio, amp in [(1.0, 1.0), (2.76, 0.5), (5.4, 0.3), (1.21, 0.6)]:
+            ring += (np.sin(2 * np.pi * base * ratio * t3) * np.exp(-t3 / 0.09) * amp).astype(np.float32)
+        y[:len(ring)] += ring * 0.30
+        c = _noise_burst(sr, 0.008, 1500, 7000, tau=0.004)
+        y[:len(c)] += c * 0.4
+    y = _room_tail(y, sr, dur=0.10, wet=0.08)
+    peak = np.max(np.abs(y))
+    if peak > 1e-9:
+        y = (y / peak * 0.88).astype(np.float32)
+    return y
+
 def render_activity(events, duration_sec, sr):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
-    files = _bank_files("impacts")
-    for i, e in enumerate(events):
+    for e in events:
         g = float(getattr(e, "gain", 1.0))
         if g <= 0: continue
-        y = _vary(_load_sample(files[i % len(files)], sr), 0.06) if files else _vary(_synth_step(sr), 0.06)
-        _place(track, y, int(e.start_sec * sr), random.uniform(0.25, 0.45) * g)
+        y = _impact_hit(sr)                      # fresh randomized hit every event
+        _place(track, y, int(e.start_sec * sr), random.uniform(0.5, 0.75) * g)
     return track
 
 # ------------------------------------------------- ball bounce & punch hits --
