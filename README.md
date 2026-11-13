@@ -45,5 +45,27 @@ Tuned for free-tier containers (2 vCPU / 16GB RAM): nano-class models, strided f
 
 Free tier includes 120 core-hours/month (≈30 h on a 4-core machine). Codespaces auto-stop after 30 min idle; restart = open the codespace → `./start_snapfoley.sh` → same URL.
 
+## For teammates — working on this repo
+
+Everything a teammate needs is committed; nothing lives only on the original laptop:
+
+- **Zero setup on Codespaces:** opening a Codespace runs `.devcontainer/setup.sh` (installs ffmpeg + all Python deps), and `postStartCommand` auto-launches the server — the UI is simply there when the editor opens.
+- **Models are in the repo:** `yolov8n.pt` is committed; `app/` detectors degrade gracefully to the motion-energy fallback if MediaPipe/YOLO weights are missing, so detection always returns events.
+- **All sound synthesis is in `app/mixer.py`** (physical synthesis — no external sample downloads, no licensing traps). The `audio_bank/` retrieval samples are committed too.
+- **Run anywhere with Python 3.10–3.11:** `pip install -r requirements-cloud.txt` + `ffmpeg` on PATH → `uvicorn app.main:app --port 7860`. (MediaPipe needs ≤3.11; Python 3.12+ works but falls back to motion-only detection.)
+- **Verify a change:** `python qa_loop.py` must be 7/7 green; then upload the demo videos through the UI (boxing → 16 punches, basketball → 10 bounces, typing → keystrikes, POV walk → steps) and check the timeline.
+
+### Why everything is local?
+
+Three deliberate reasons, not limitations:
+
+1. **Hackathon-critical reliability:** cloud AI ( paid APIs) fail at demo time — rate limits, keys expiring, Wi-Fi dead zones. The demo must run off a laptop battery or a free Codespace with no network beyond the page itself.
+2. **Zero cost:** every "good" foley/sound-effect API charges per call and needs an API key; the team has none. Physical synthesis in `mixer.py` + committed CC0 samples produce the sounds offline for free, forever.
+3. **Privacy + simplicity for users:** raw, unedited video never leaves the machine — no uploads to someone else's storage, no accounts, no quota.
+
+### Sharing your exact setup with teammates
+
+Cloning the GitHub repo **is** the full setup — the detectors, mixer, models, samples, devcontainer and scripts all live in the repo. What is *not* in the repo and cannot be: your laptop's `.venv` (rebuild it from `requirements-*.txt` — or just use Codespaces where it's built automatically) and any un-pushed local files. So as long as you commit + push your changes, a teammate gets *exactly* the same behavior by cloning — they don't need access to your laptop.
+
 ## QA
 `python qa_loop.py` must be green before shipping (writes `qa_report.json`).

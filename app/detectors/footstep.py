@@ -198,6 +198,10 @@ class FootstepDetector:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
         energies, vertical, prev = [], [], None
         resps, hand_hits, hand_samples = [], 0, 0
+        # ground-region stats (sampled every 10th frame): pick the surface so
+        # the foley voicing matches what the walker is standing on, and add a
+        # leaf-crunch layer when fallen leaves are visible (autumn POV walks).
+        green_frac, leaf_frac, surf_samples = 0.0, 0.0, 0
         frame_idx = 0
         while cap.isOpened():
             ok, frame = cap.read()
@@ -224,6 +228,16 @@ class FootstepDetector:
                 except Exception:
                     pass
                 hand_samples += 1
+            # ground look: bottom third of the frame, sampled sparsely
+            if frame_idx % 10 == 0:
+                h = small.shape[0]
+                ground = small[int(h * 0.65):, :].astype(np.float32)
+                b, gch, r = ground[:, :, 0], ground[:, :, 1], ground[:, :, 2]
+                mx = np.maximum(b, np.maximum(gch, r)) + 1e-6
+                sat = (mx - np.minimum(b, np.minimum(gch, r))) / mx
+                green = float(np.mean((gch > r * 1.12) & (gch > b * 1.12) & (sat > 0.15)))
+                leafy = float(np.mean((r > b * 1.25) & (r > 70) & (gch > b) & (sat > 0.25)))
+                green_frac += green; leaf_frac += leafy; surf_samples += 1
             prev = gray
             frame_idx += 1
             if progress_callback and frame_idx % 10 == 0:
@@ -236,6 +250,17 @@ class FootstepDetector:
             return []  # hands dominate the frame -> not a walking POV
         if resps and float(np.mean(resps)) > 0.75:
             return []  # mostly-static camera with localized motion -> not POV walking
+        # surface from the ground stats
+        if surf_samples:
+            gf, lf = green_frac / surf_samples, leaf_frac / surf_samples
+        else:
+            gf = lf = 0.0
+        if gf > 0.22:
+            step_prompt = "footsteps on grass, close-mic, foley"
+        elif lf > 0.015:
+            step_prompt = "footsteps on brick pavement with fallen leaves, close-mic, foley"
+        else:
+            step_prompt = "footsteps on pavement, close-mic, foley"
 
         def cadence(x, fmin=0.8, fmax=3.0):
             x = np.asarray(x, dtype=float)
@@ -290,7 +315,7 @@ class FootstepDetector:
                 event_id=f"pov_{lr}_{p}", type="footstep",
                 start_sec=sf / fps, end_sec=sf / fps + 0.25, frame=int(p),
                 timecode=_smpte(p, fps), confidence=conf,
-                prompt="footsteps on surface, close-mic, foley", duration_hint=0.4,
+                prompt=step_prompt, duration_hint=0.4,
                 person_id=0))
         # de-dup steps that snapped to the same frame
         seen, out = set(), []

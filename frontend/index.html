@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>SnapFoley — Video Foley Studio</title>
 <link rel="stylesheet" href="/static/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>" />
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
     <span class="logo">🎧</span>
     <div>
-      <h1>SnapFoley <span class="tag-local">LOCAL</span></h1>
-      <p class="sub">Automatic foley for any video • fully offline • i5 / RTX 2050 tuned</p>
+      <h1>SnapFoley <span class="tag-local">100% LOCAL</span></h1>
+      <p class="sub">Automatic foley for any video • no API keys • no internet at runtime</p>
     </div>
   </div>
   <div class="health" id="healthBadge">checking backend…</div>
@@ -23,12 +24,13 @@
   <section class="card">
     <h2>1. Upload video</h2>
     <div id="dropzone" class="dropzone" tabindex="0">
-      <p>Drop <b>mp4 / mov / webm</b> here or click</p>
-      <input id="videoInput" type="file" accept="video/*" hidden />
+      <div class="dz-icon">🎬</div>
+      <p>Drop <b>mp4 / mov / webm</b> here, or click to browse</p>
       <button class="btn ghost" type="button">Choose video</button>
+      <input id="videoInput" type="file" accept="video/*" hidden />
     </div>
     <video id="preview" controls playsinline class="preview hidden"></video>
-    <p class="hint" id="fileMeta">No file yet. Max 200MB.</p>
+    <p class="hint" id="fileMeta">No file yet. Max 200MB — chunked upload works through tunnels.</p>
 
     <div class="row">
       <label>Sensitivity
@@ -43,7 +45,7 @@
       </label>
     </div>
 
-    <button id="processBtn" class="btn primary" disabled>→ Process video</button>
+    <button id="processBtn" class="btn primary" disabled>⚡ Process video — detect &amp; generate foley</button>
     <div class="progress-wrap hidden" id="progressWrap">
       <div class="progress"><div id="progressBar"></div></div>
       <p id="progressText">Uploading…</p>
@@ -54,7 +56,15 @@
   <!-- RIGHT: Results -->
   <section class="card">
     <h2>2. Results</h2>
-    <div id="empty">Upload a video — SnapFoley watches it, detects every action, and generates matching foley sound.</div>
+    <div id="empty" class="empty-hero">
+      <div class="big">🔊</div>
+      Upload a video — SnapFoley watches it, detects every action, and generates a matching foley track.
+      <div class="empty-steps">
+        <div><b>1</b> Detect — punches, bounces, steps, typing, claps</div>
+        <div><b>2</b> Generate — physical synthesis, synced to frame</div>
+        <div><b>3</b> Edit — nudge sounds, then re-render in one click</div>
+      </div>
+    </div>
     <div id="results" class="hidden">
       <div class="row stats">
         <div class="stat"><span id="statEvents">0</span><small>events</small></div>
@@ -62,7 +72,7 @@
         <div class="stat"><span id="statPrompt">—</span><small>sound design</small></div>
       </div>
 
-      <h3>Timeline</h3>
+      <h3>Timeline <span class="kbd">click to seek</span></h3>
       <div id="timeline" class="timeline"></div>
 
       <h3>Events</h3>
@@ -80,18 +90,19 @@
         <p class="mono" id="finalStatus">Generating…</p>
         <video id="finalVideo" controls playsinline class="preview"></video>
         <div class="row">
-          <button class="btn" id="dlFinalBtn">Download video (with audio)</button>
-          <button class="btn" id="csvBtn">Download CSV</button>
-          <button class="btn" id="jsonBtn">Download JSON</button>
-          <button class="btn ghost" id="resetBtn">Reset</button>
+          <button class="btn" id="dlFinalBtn">⬇ Video (with audio)</button>
+          <button class="btn" id="csvBtn">⬇ CSV</button>
+          <button class="btn" id="jsonBtn">⬇ JSON</button>
+          <button class="btn ghost danger-ghost" id="resetBtn">Reset</button>
         </div>
       </div>
 
       <h3>3. Edit sounds</h3>
-      <p class="hint">Move a sound in time, change what it is, set its volume, delete or add — then re-render.</p>
+      <p class="hint">Rows glow while the video plays over them. Move a sound in time, change what it is,
+        set its volume, delete or add at the playhead — then re-render.</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th style="width:34%">Time (s)</th><th>Sound</th><th style="width:26%">Volume</th><th></th></tr></thead>
+          <thead><tr><th style="width:32%">Time (s)</th><th>Sound</th><th style="width:28%">Volume</th><th></th></tr></thead>
           <tbody id="editBody"></tbody>
         </table>
       </div>
@@ -101,21 +112,24 @@
       </div>
       <p class="mono" id="editStatus"></p>
 
-      <p class="hint">Stems are local (CLAP retrieval). Audio is generated locally and muxed with ffmpeg.</p>
+      <p class="hint">All audio is generated locally (physical synthesis + local retrieval) and muxed with ffmpeg.</p>
     </div>
 
-    <hr />
-    <h3>Podcast script (test)</h3>
-    <div class="row">
-      <input id="scriptInput" type="file" accept=".txt,.md" />
-      <button class="btn" id="scriptBtn">Upload script</button>
-    </div>
-    <pre class="mono" id="scriptOut"></pre>
+    <details class="extra">
+      <summary>Podcast script (beta)</summary>
+      <div class="row">
+        <input id="scriptInput" type="file" accept=".txt,.md" />
+        <button class="btn" id="scriptBtn">Upload script</button>
+      </div>
+      <pre class="mono" id="scriptOut"></pre>
+    </details>
   </section>
 </main>
 
 <footer class="foot">
-  Backend: <code id="apiBase"></code> • Fully local — no API keys • QA: <code>python qa_loop.py</code>
+  <span>Backend:</span><code id="apiBase"></code>
+  <span>•</span><span>Fully local — no API keys, no cloud calls</span>
+  <span>•</span><span>QA: <code>python qa_loop.py</code></span>
 </footer>
 
 <script src="/static/app.js"></script>

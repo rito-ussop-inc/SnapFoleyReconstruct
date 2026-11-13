@@ -169,6 +169,11 @@ def _fallback_prompt(events) -> str:
     if top == "clap":
         return "hand claps, close-mic, foley"
     if top == "footstep":
+        # prefer the detector's own surface-aware label (POV gait detects the
+        # ground: pavement / grass / fallen leaves) over the generic string
+        fps_prompts = [e.prompt for e in events if e.type == "footstep" and e.prompt]
+        if fps_prompts:
+            return max(set(fps_prompts), key=fps_prompts.count)
         return "footsteps on surface, close-mic, foley"
     if top == "ambience":
         return "ambient room tone, soft foley"

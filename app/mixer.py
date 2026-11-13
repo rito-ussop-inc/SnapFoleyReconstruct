@@ -23,7 +23,7 @@ BANK = Path(__file__).resolve().parent.parent / "audio_bank"
 
 SURFACE_KEYWORDS = {
     "concrete": ["concrete", "pavement", "paved", "stone", "brick", "sidewalk",
-                 "street", "road", "tile", "marble", "asphalt", "cobble"],
+                 "street", "road", "tile", "marble", "asphalt", "cobble", "leaves"],
     "grass":    ["grass", "gravel", "lawn", "field", "meadow", "garden", "dirt"],
     "wood":     ["wood", "wooden", "floorboard", "hardwood", "deck", "floor"],
     "carpet":   ["carpet", "rug", "indoors", "indoor", "room", "office", "home"],
@@ -228,15 +228,43 @@ def _synth_step(sr=44100):
 
 # ---------------------------------------------------------------- renderers --
 
+def _leaf_crunch(sr, big=True):
+    """Dried-leaf crunch underfoot: crisp rustle + 2-3 brittle crackle ticks."""
+    dur = 0.14 if big else 0.08
+    n = int(sr * dur)
+    y = np.random.randn(n).astype(np.float32)
+    y = _band(y, sr, "band", 900 * random.uniform(0.85, 1.15),
+              4500 * random.uniform(0.85, 1.15))
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.minimum(t / 0.004, 1.0) * np.exp(-t / 0.026)
+    y *= env
+    # brittle ticks (leaf fragments snapping)
+    for _ in range(random.randint(1, 3)):
+        o = int(random.uniform(0.02, dur * 0.8) * sr)
+        tick = _noise_burst(sr, 0.012, 1500, 5200, tau=0.005, attack=0.0003)
+        e = min(n, o + len(tick))
+        y[o:e] += tick[:e - o] * random.uniform(0.5, 1.0)
+    peak = np.max(np.abs(y))
+    if peak > 1e-9:
+        y = (y / peak * random.uniform(0.5, 0.8)).astype(np.float32)
+    return y
+
 def render_footsteps(events, duration_sec, sr, prompt=""):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
     surface = map_surface(prompt)
     files = _bank_files("footsteps", surface)
+    leafy = "leaves" in (prompt or "").lower()
     for i, e in enumerate(events):
         g = float(getattr(e, "gain", 1.0))
         if g <= 0: continue
         y = _footstep_hit(sr, surface, files[i % len(files)] if files else None)
+        if leafy and random.random() < 0.45:
+            # some steps land on/near fallen leaves: add a crunch layer
+            lc = _leaf_crunch(sr)
+            o = int(random.uniform(0.0, 0.02) * sr)
+            n = min(len(lc), max(0, len(y) - o))
+            y[o:o + n] += lc[:n] * random.uniform(0.7, 1.1)
         jitter = random.uniform(-0.015, 0.015)
         _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.8, 1.0) * g)
     return track
@@ -315,76 +343,93 @@ def render_activity(events, duration_sec, sr):
 # naturally (the old generic-bank loop was the "same repetitive sounds" bug).
 
 def _bounce_hit(sr, surface="hard"):
-    """Basketball-style bounce: skin click -> rubber body -> hollow ring -> slap.
+    """Basketball dribble on a hard court: click -> shell 'thock' -> floor thump.
 
-    A ball contact is a stiff, short collision: sharp attack, quick pitch drop,
-    a hollow rubber resonance right after, and a faint slap off the floor.
+    Real dribbles are SHORT and dry: the rubber shell compresses and rings
+    ~200-330Hz for only ~30ms while dropping pitch, the floor adds a low
+    thump, and a faint skin click leads. The old version's long hollow ring
+    read as a cartoon 'boing' (the 'random beat' complaint).
     """
-    dur = 0.32
+    dur = 0.24
     total = int(sr * dur)
     y = np.zeros(total, dtype=np.float32)
 
-    # 1. skin/leather click at contact — leads the hit
-    click = _noise_burst(sr, 0.014, 900 * random.uniform(0.85, 1.15),
-                         3800 * random.uniform(0.8, 1.2), tau=0.007, attack=0.0004)
-    y[:len(click)] += click * 0.95
+    # 1. skin click at contact (ball meets floor, air expelled)
+    click = _noise_burst(sr, 0.012, 500 * random.uniform(0.85, 1.15),
+                         3200 * random.uniform(0.85, 1.15), tau=0.0012, attack=0.0002)
+    y[:len(click)] += click * 1.8
 
-    # 2. rubber body: fast pitch drop, THE bounce signature
-    f1 = 130 * random.uniform(0.92, 1.10)
-    th = _synth_thump(sr, f_start=f1, f_end=f1 * 0.62, dur=0.11, tau=0.020)
-    y[:len(th)] += th * 0.50
+    # 2. shell 'thock': damped sine with fast pitch drop (rubber compression)
+    f0 = 235 * random.uniform(0.88, 1.12)
+    n2 = int(sr * 0.09)
+    t2 = np.linspace(0, 0.09, n2, endpoint=False)
+    fdrop = f0 * (1.0 - 0.24 * np.minimum(t2 / 0.05, 1.0))
+    ph = 2 * np.pi * np.cumsum(fdrop) / sr
+    thock = (np.sin(ph) + 0.35 * np.sin(1.52 * ph)) * np.exp(-t2 / 0.028)
+    y[:n2] += thock.astype(np.float32) * 0.85
 
-    # 3. hollow resonance (ball shell ringing, two detuned modes)
-    f0 = (95 * random.uniform(0.9, 1.1))
-    t3 = np.linspace(0, 0.18, int(sr * 0.18), endpoint=False)
-    ring = (np.sin(2 * np.pi * f0 * t3) + 0.6 * np.sin(2 * np.pi * f0 * 1.22 * t3)) * np.exp(-t3 / 0.045)
-    y[:len(ring)] += ring.astype(np.float32) * 0.45
+    # 3. floor thump (court body) + pump burst of expelled air
+    th = _synth_thump(sr, f_start=88 * random.uniform(0.9, 1.1),
+                      f_end=58, dur=0.07, tau=0.024)
+    y[:len(th)] += th * 0.60
+    pump = _noise_burst(sr, 0.010, 400, 900, tau=0.004, attack=0.0004)
+    y[:len(pump)] += pump * 0.50
 
-    # 4. floor slap
-    slap = _noise_burst(sr, 0.032, 400, 1800, tau=0.013)
-    y[:len(slap)] += slap * 0.50
+    # 4. occasional rubber squeak on hard pushes
+    if random.random() < 0.15:
+        o = int(random.uniform(0.02, 0.04) * sr)
+        ns = int(sr * 0.07)
+        t4 = np.linspace(0, 0.07, ns, endpoint=False)
+        fsk = 2200 + 900 * t4 / 0.07
+        squeak = np.sin(2 * np.pi * np.cumsum(fsk) / sr) * np.exp(-t4 / 0.03)
+        y[o:o + ns] += squeak.astype(np.float32) * 0.07
 
-    y = _room_tail(y, sr, dur=0.10, wet=0.07)
+    y = _room_tail(y, sr, dur=0.07, wet=0.05)
     peak = np.max(np.abs(y))
     if peak > 1e-9: y = (y / peak * 0.9).astype(np.float32)
     return y
 
 def _punch_hit(sr, heavy=True):
-    """Boxing punch on a heavy bag: glove slap -> deep thud -> bag wobble.
+    """Boxing punch on a heavy bag: connect -> leather slap -> deep bag 'whump'.
 
-    A heavy-bag punch is: a short leather slap, a VERY fast low thud (the fist
-    compressing the bag), then the whole bag swinging as a slow damped wave.
-    About a third of punches also rattle the chains.
+    A real heavy-bag punch is a 2-3ms compression transient, a short leather
+    slap, then the bag BODY: a deep 55-100Hz whump that decays in ~100ms with
+    slight pitch drop as the bag deforms. The old version's long pure-sine
+    'wobble' read as an artificial hum (the 'random beat' complaint).
     """
-    dur = 0.55 if heavy else 0.35
+    dur = 0.42 if heavy else 0.30
     total = int(sr * dur)
     y = np.zeros(total, dtype=np.float32)
 
-    # 1. glove slap — you hear the leather crack FIRST
-    slap = _noise_burst(sr, 0.024, 500 * random.uniform(0.8, 1.2),
-                        3000 * random.uniform(0.8, 1.2), tau=0.010, attack=0.0006)
-    y[:len(slap)] += slap * 0.95
+    # 1. connect transient: very fast compression click
+    conn = _noise_burst(sr, 0.005, 300 * random.uniform(0.9, 1.1),
+                        3500 * random.uniform(0.85, 1.15), tau=0.0012, attack=0.0002)
+    y[:len(conn)] += conn * 1.5
 
-    # 2. body thud — follows the slap
-    th = _synth_thump(sr, f_start=170 * random.uniform(0.9, 1.12),
-                      f_end=72 * random.uniform(0.9, 1.1), dur=0.10, tau=0.014)
-    y[:len(th)] += th * 0.55
+    # 2. leather slap: short mid-band noise, clearly audible over the body
+    slap = _noise_burst(sr, 0.025, 1000 * random.uniform(0.85, 1.15),
+                        5000 * random.uniform(0.85, 1.15), tau=0.008, attack=0.0004)
+    y[:len(slap)] += slap * 1.7
 
-    # 3. bag wobble — big slow damped wave starting right after impact
-    o = int(0.02 * sr)
-    fw = 58 * random.uniform(0.85, 1.15)
-    t3 = np.linspace(0, dur - 0.02, total - o, endpoint=False)
-    wob = np.sin(2 * np.pi * fw * t3) * np.exp(-t3 / 0.16)
-    wob *= (1 - np.minimum(t3 / 0.012, 1.0))          # soft onset
-    y[o:] += wob.astype(np.float32) * 0.35
+    # 3. bag body: two damped modes with pitch drop + low noise thump
+    n3 = int(sr * 0.13)
+    t3 = np.linspace(0, 0.13, n3, endpoint=False)
+    f1 = 64 * random.uniform(0.9, 1.1)
+    fd = f1 * (1.0 - 0.22 * np.minimum(t3 / 0.10, 1.0))
+    ph = 2 * np.pi * np.cumsum(fd) / sr
+    body = (np.sin(ph) + 0.45 * np.sin(1.47 * ph)) * np.exp(-t3 / 0.062)
+    y[:n3] += body.astype(np.float32) * 0.62
+    th = _synth_thump(sr, f_start=95 * random.uniform(0.9, 1.1), f_end=55,
+                      dur=0.09, tau=0.022)
+    y[:len(th)] += th * 0.48
 
-    # 4. chain rattle on some punches
-    if random.random() < 0.35:
-        o2 = int(random.uniform(0.08, 0.18) * sr)
-        rattle = _noise_burst(sr, 0.12, 1800, 5200, tau=0.05, attack=0.002)
-        y[o2:o2 + len(rattle)] += rattle * 0.12
+    # 4. chain jingle on hard punches, slightly delayed, quiet
+    if heavy and random.random() < 0.3:
+        o2 = int(random.uniform(0.05, 0.12) * sr)
+        rattle = _noise_burst(sr, 0.09, 2500, 6000, tau=0.028, attack=0.001)
+        y[o2:o2 + len(rattle)] += rattle * 0.10
 
-    y = _room_tail(y, sr, dur=0.16, wet=0.10)
+    y = _room_tail(y, sr, dur=0.10, wet=0.07)
     peak = np.max(np.abs(y))
     if peak > 1e-9: y = (y / peak * 0.9).astype(np.float32)
     return y
@@ -465,6 +510,15 @@ def build_timeline(task_id, events: List[Event], stems: List[Clip], duration_sec
         (amb if s.loop or e.type == "ambience" else sfx).append(s)
     return Timeline(task_id=task_id, duration_sec=duration_sec, tracks=[Track(name="sfx", clips=sfx), Track(name="ambience", clips=amb)])
 
+def _family_prompt(evs, fallback):
+    """The family's own prompt carries per-event surface info (e.g. POV gait
+    detects 'brick pavement with fallen leaves') — prefer it over the generic
+    task prompt so the renderer voices the right surface."""
+    ps = [e.prompt for e in evs if getattr(e, "prompt", "")]
+    if not ps:
+        return fallback
+    return max(set(ps), key=ps.count)
+
 def mix_track(events, stem_paths, duration_sec, sr=44100, prompt=""):
     total = int(duration_sec * sr)
     if total <= 0: return np.zeros(1, dtype=np.float32)
@@ -472,13 +526,13 @@ def mix_track(events, stem_paths, duration_sec, sr=44100, prompt=""):
     by = lambda t: [e for e in events if e.type == t]
     foot, typ, act, amb = by("footstep"), by("typing"), by("activity"), by("ambience")
     bou, pnc, clp = by("bounce"), by("punch"), by("clap")
-    if foot: track += render_footsteps(foot, duration_sec, sr, prompt)
+    if foot: track += render_footsteps(foot, duration_sec, sr, _family_prompt(foot, prompt))
     if typ:  track += render_typing(typ, duration_sec, sr)
     if act:  track += render_activity(act, duration_sec, sr)
     if amb:  track += render_ambience(amb, duration_sec, sr)
-    if bou:  track += render_bounce(bou, duration_sec, sr, prompt)
-    if pnc:  track += render_punch(pnc, duration_sec, sr, prompt)
-    if clp:  track += render_clap(clp, duration_sec, sr, prompt)
+    if bou:  track += render_bounce(bou, duration_sec, sr, _family_prompt(bou, prompt))
+    if pnc:  track += render_punch(pnc, duration_sec, sr, _family_prompt(pnc, prompt))
+    if clp:  track += render_clap(clp, duration_sec, sr, _family_prompt(clp, prompt))
     peak = np.max(np.abs(track))
     if peak > 1e-6: track = (track / peak * 0.85).astype(np.float32)
     return track

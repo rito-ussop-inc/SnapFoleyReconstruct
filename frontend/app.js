@@ -135,23 +135,15 @@ function render(j){
   els.statDuration.textContent = videoDuration.toFixed(1) + "s";
   els.statPrompt.textContent = (j.prompt || "—").slice(0, 40);
   els.statPrompt.title = j.prompt || "";
-  // events table
+  // events table (colored dot per sound family)
+  const dot = t => `<span class="evt-dot ${t}"></span>`;
   els.eventsBody.innerHTML = evs.map((e,i) =>
-    `<tr><td>${i+1}</td><td>${e.timecode || e.start_sec.toFixed(2)+"s"}</td><td>${detailOf(e)}</td><td>${e.type}</td><td>${Number(e.confidence||0).toFixed(2)}</td></tr>`
+    `<tr><td>${i+1}</td><td>${e.timecode || e.start_sec.toFixed(2)+"s"}</td><td>${detailOf(e)}</td><td>${dot(e.type)}${e.type}</td><td>${Number(e.confidence||0).toFixed(2)}</td></tr>`
   ).join("") || `<tr><td colspan="5">No events detected — the audio will be silent (try higher sensitivity)</td></tr>`;
-  // timeline
+  // timeline (ruler + clips + playhead)
   const tl = j.timeline || { tracks: [], duration_sec: 10 };
   const dur = Math.max(tl.duration_sec || 10, 1);
-  let html = "";
-  (tl.tracks || []).forEach(tr => {
-    (tr.clips || []).forEach(c => {
-      const ev = evs.find(e => e.event_id === c.event_id) || {};
-      const left = ((ev.start_sec || 0) / dur * 100);
-      const w = Math.max(((ev.duration_hint || 0.5) / dur * 100), 2);
-      html += `<div class="clip ${tr.name==='ambience'?'amb':''} ${ev.type||''}" style="left:${left}%;width:${w}%" title="${ev.type||'clip'} @ ${(ev.start_sec||0).toFixed(2)}s"></div>`;
-    });
-  });
-  els.timeline.innerHTML = html || `<div style="padding:12px;color:var(--muted)">No clips yet</div>`;
+  renderTimeline(tl, evs, dur);
   // editor state = what the server detected
   editorEvents = evs.map(e => ({ event_id: e.event_id, type: e.type,
     start_sec: Number(e.start_sec||0), gain: Number(e.gain ?? 1) }));
@@ -160,6 +152,70 @@ function render(j){
   els.applyMixBtn.disabled = false;
   els.editStatus.textContent = "";
 }
+
+// ------------------------------ timeline -------------------------------------
+// The timeline is interactive: it shows a time ruler, colored clips per sound
+// family, and a playhead synced to whichever video is visible. Clicking it
+// seeks the video — the fastest way to line up a sound with its moment.
+
+let timelineWired = false;
+
+function activeVideo(){
+  return (!els.finalWrap.classList.contains("hidden") && els.finalVideo.src)
+    ? els.finalVideo : els.preview;
+}
+
+function renderTimeline(tl, evs, dur){
+  let html = `<div class="tl-ruler">`;
+  const n = Math.min(10, Math.max(4, Math.round(dur / 1.2)));
+  for(let i = 0; i <= n; i++){
+    const t = dur * i / n;
+    html += `<div class="tl-tick" style="left:${(i / n * 100).toFixed(2)}%"><span>${t.toFixed(1)}s</span></div>`;
+  }
+  html += `</div>`;
+  let clips = "";
+  (tl.tracks || []).forEach(tr => {
+    (tr.clips || []).forEach(c => {
+      const ev = evs.find(e => e.event_id === c.event_id) || {};
+      const left = ((ev.start_sec || 0) / dur * 100);
+      const w = Math.max(((ev.duration_hint || 0.5) / dur * 100), 2);
+      clips += `<div class="clip ${tr.name==='ambience'?'amb':''} ${ev.type||''}" style="left:${left}%;width:${w}%" title="${ev.type||'clip'} @ ${(ev.start_sec||0).toFixed(2)}s"></div>`;
+    });
+  });
+  html += clips || `<div style="padding:32px 12px;color:var(--muted)">No clips yet</div>`;
+  html += `<div class="playhead" id="playhead" style="display:none"></div>`;
+  els.timeline.innerHTML = html;
+  if(!timelineWired){
+    timelineWired = true;
+    els.timeline.addEventListener("click", e => {
+      const r = els.timeline.getBoundingClientRect();
+      const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * videoDuration;
+      const v = activeVideo();
+      if(v && v.duration) v.currentTime = Math.min(t, Math.max(0, v.duration - 0.05));
+    });
+  }
+}
+
+// playhead + glowing editor rows, driven by both video elements
+(function wirePlayback(){
+  ["preview", "finalVideo"].forEach(id => {
+    const v = $(id);
+    if(!v) return;
+    v.addEventListener("timeupdate", () => {
+      const ph = document.getElementById("playhead");
+      if(ph && v.duration && v.currentTime > 0){
+        ph.style.display = "block";
+        ph.style.left = (v.currentTime / v.duration * 100) + "%";
+      }
+      // glow the editor rows currently "under" the playhead
+      const rows = els.editBody ? els.editBody.children : [];
+      editorEvents.forEach((ev, i) => {
+        const row = rows[i];
+        if(row) row.classList.toggle("active-row", Math.abs((v.currentTime||0) - ev.start_sec) <= 0.35);
+      });
+    });
+  });
+})();
 
 // ------------------------------ manual editor --------------------------------
 
@@ -250,7 +306,7 @@ async function refreshStats(){
     els.statEvents.textContent = evs.length;
     els.statPrompt.textContent = (j.prompt || "—").slice(0, 40);
     els.eventsBody.innerHTML = evs.map((e,i) =>
-      `<tr><td>${i+1}</td><td>${e.timecode || e.start_sec.toFixed(2)+"s"}</td><td>${detailOf(e)}</td><td>${e.type}</td><td>${Number(e.confidence||0).toFixed(2)}</td></tr>`).join("");
+      `<tr><td>${i+1}</td><td>${e.timecode || e.start_sec.toFixed(2)+"s"}</td><td>${detailOf(e)}</td><td><span class="evt-dot ${e.type}"></span>${e.type}</td><td>${Number(e.confidence||0).toFixed(2)}</td></tr>`).join("");
   }catch(e){}
 }
 
