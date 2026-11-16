@@ -144,9 +144,11 @@ function render(j){
   const tl = j.timeline || { tracks: [], duration_sec: 10 };
   const dur = Math.max(tl.duration_sec || 10, 1);
   renderTimeline(tl, evs, dur);
-  // editor state = what the server detected
+  // editor state = what the server detected (prompt included: the editor can
+  // rewrite the sound character per event, e.g. change the step surface)
   editorEvents = evs.map(e => ({ event_id: e.event_id, type: e.type,
-    start_sec: Number(e.start_sec||0), gain: Number(e.gain ?? 1) }));
+    start_sec: Number(e.start_sec||0), gain: Number(e.gain ?? 1),
+    prompt: e.prompt || "" }));
   renderEditor();
   els.addEventBtn.disabled = false;
   els.applyMixBtn.disabled = false;
@@ -219,6 +221,18 @@ function renderTimeline(tl, evs, dur){
 
 // ------------------------------ manual editor --------------------------------
 
+// per-type default sound-character prompts (mirrors the backend's _TYPE_PROMPT);
+// wording matters — surface/material keywords steer the renderer's voicing
+const DEFAULT_PROMPTS = {
+  footstep: "footsteps on surface, close-mic, foley",
+  typing:   "laptop keyboard typing, close-mic, foley",
+  activity: "motion impact hit, close-mic, foley",
+  ambience: "soft room ambience, indoor foley",
+  bounce:   "ball bounce impact, close-mic, foley",
+  punch:    "punch impact on heavy bag, foley",
+  clap:     "hand clap, close-mic, foley",
+};
+
 function playheadSec(){
   const v = (!els.finalWrap.classList.contains("hidden") && els.finalVideo.src) ? els.finalVideo : els.preview;
   return Math.max(0, Math.min(v.currentTime || 0, videoDuration - 0.05));
@@ -226,19 +240,27 @@ function playheadSec(){
 
 function renderEditor(){
   if(!editorEvents.length){
-    els.editBody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">No sounds yet — add one at the playhead.</td></tr>`;
+    els.editBody.innerHTML = `<div class="ed-empty">No sounds yet — add one at the playhead.</div>`;
     return;
   }
   els.editBody.innerHTML = editorEvents.map((ev, i) => `
-    <tr>
-      <td><input type="number" class="ed-time" data-i="${i}" min="0" max="${videoDuration.toFixed(2)}" step="0.05" value="${ev.start_sec.toFixed(2)}" style="width:100%"></td>
-      <td><select class="ed-type" data-i="${i}">
-        ${["footstep","typing","activity","bounce","punch","clap","ambience"].map(t => `<option value="${t}" ${t===ev.type?"selected":""}>${t}</option>`).join("")}
-      </select></td>
-      <td><input type="range" class="ed-gain" data-i="${i}" min="0" max="2" step="0.05" value="${ev.gain}" style="width:90%;vertical-align:middle">
-          <span class="ed-gval" data-i="${i}">${ev.gain.toFixed(2)}</span></td>
-      <td><button class="btn ghost ed-del" data-i="${i}" title="delete">✕</button></td>
-    </tr>`).join("");
+    <div class="ed-row" data-i="${i}">
+      <div class="ed-line1">
+        <button class="btn ghost ed-play" data-i="${i}" title="Play video from just before this sound (−0.5s)">▶</button>
+        <input type="number" class="ed-time" data-i="${i}" min="0" max="${videoDuration.toFixed(2)}" step="0.05" value="${ev.start_sec.toFixed(2)}" title="when this sound happens (seconds)">
+        <select class="ed-type" data-i="${i}" title="what kind of sound">
+          ${["footstep","typing","activity","bounce","punch","clap","ambience"].map(t => `<option value="${t}" ${t===ev.type?"selected":""}>${t}</option>`).join("")}
+        </select>
+        <span class="ed-gain-wrap" title="volume">
+          <input type="range" class="ed-gain" data-i="${i}" min="0" max="2" step="0.05" value="${ev.gain}">
+          <span class="ed-gval" data-i="${i}">${ev.gain.toFixed(2)}</span>
+        </span>
+        <button class="btn ghost ed-del" data-i="${i}" title="delete this sound">✕</button>
+      </div>
+      <input type="text" class="ed-prompt" data-i="${i}" value="${(ev.prompt || "").replace(/"/g, "&quot;")}"
+        placeholder="${DEFAULT_PROMPTS[ev.type] || "sound character"}"
+        title="how this sound should read — e.g. “brick pavement with fallen leaves”">
+    </div>`).join("");
 
   els.editBody.querySelectorAll(".ed-time").forEach(inp => inp.addEventListener("change", e => {
     const i = +e.target.dataset.i;
@@ -246,12 +268,33 @@ function renderEditor(){
     e.target.value = editorEvents[i].start_sec.toFixed(2);
   }));
   els.editBody.querySelectorAll(".ed-type").forEach(sel => sel.addEventListener("change", e => {
-    editorEvents[+e.target.dataset.i].type = e.target.value;
+    const i = +e.target.dataset.i;
+    const old = editorEvents[i].type;
+    editorEvents[i].type = e.target.value;
+    // follow the type with its default prompt when the user hadn't customized it
+    const pInp = els.editBody.querySelector(`.ed-prompt[data-i="${i}"]`);
+    const cur = (editorEvents[i].prompt || "").trim();
+    if(!cur || cur === DEFAULT_PROMPTS[old]){
+      editorEvents[i].prompt = DEFAULT_PROMPTS[e.target.value] || "";
+      if(pInp) pInp.value = editorEvents[i].prompt;
+    }
+    if(pInp) pInp.placeholder = DEFAULT_PROMPTS[e.target.value] || "sound character";
   }));
   els.editBody.querySelectorAll(".ed-gain").forEach(sl => sl.addEventListener("input", e => {
     const i = +e.target.dataset.i;
     editorEvents[i].gain = Number(e.target.value);
     els.editBody.querySelector(`.ed-gval[data-i="${i}"]`).textContent = editorEvents[i].gain.toFixed(2);
+  }));
+  els.editBody.querySelectorAll(".ed-prompt").forEach(inp => inp.addEventListener("input", e => {
+    editorEvents[+e.target.dataset.i].prompt = e.target.value;
+  }));
+  els.editBody.querySelectorAll(".ed-play").forEach(btn => btn.addEventListener("click", e => {
+    const ev = editorEvents[+e.target.dataset.i];
+    const v = activeVideo();
+    if(v && v.duration){
+      v.currentTime = Math.max(0, Math.min(ev.start_sec - 0.5, v.duration - 0.05));
+      v.play();
+    }
   }));
   els.editBody.querySelectorAll(".ed-del").forEach(btn => btn.addEventListener("click", e => {
     editorEvents.splice(+e.target.dataset.i, 1);
@@ -260,7 +303,8 @@ function renderEditor(){
 }
 
 els.addEventBtn.addEventListener("click", () => {
-  editorEvents.push({ type: "activity", start_sec: playheadSec(), gain: 1.0 });
+  editorEvents.push({ type: "activity", start_sec: playheadSec(), gain: 1.0,
+    prompt: DEFAULT_PROMPTS.activity });
   renderEditor();
   els.editStatus.textContent = `Added one sound at ${playheadSec().toFixed(2)}s — press “Re-render audio” to hear it.`;
 });
@@ -273,7 +317,8 @@ els.applyMixBtn.addEventListener("click", async () => {
     const r = await fetch(API + `/api/remix/${taskId}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ events: editorEvents.map(e => ({
-        event_id: e.event_id || null, type: e.type, start_sec: e.start_sec, gain: e.gain })) })
+        event_id: e.event_id || null, type: e.type, start_sec: e.start_sec, gain: e.gain,
+        prompt: e.prompt || null })) })
     });
     if(!r.ok) throw new Error((await r.text()).slice(0, 200));
     els.finalWrap.classList.remove("hidden");

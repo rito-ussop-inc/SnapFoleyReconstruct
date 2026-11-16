@@ -53,7 +53,8 @@ Dockerfile.local
 qa_report.json
 *.out
 tasks/
-audio_bank/
+# audio_bank ships with the repo: the renderer reads these real foley
+# one-shots at runtime (Mixkit + Kenney — see audio_bank/CREDITS.md)
 
 # legacy unused entry points (kept on disk, excluded from the Space repo)
 link.py

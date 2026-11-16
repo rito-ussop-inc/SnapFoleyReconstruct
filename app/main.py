@@ -328,6 +328,7 @@ class RemixEvent(BaseModel):
     type: str = "activity"
     start_sec: float = 0.0
     gain: float = 1.0
+    prompt: Optional[str] = None   # per-event sound character (editor-editable)
 
 class RemixRequest(BaseModel):
     events: List[RemixEvent]
@@ -359,7 +360,10 @@ def remix(task_id: str, req: RemixRequest, background_tasks: BackgroundTasks):
             event_id=r.event_id or f"edit_{i:04d}_{os.urandom(2).hex()}",
             type=etype, start_sec=start, end_sec=start + _TYPE_DUR[etype],
             frame=int(start * fps), timecode=_timecode(start, fps),
-            confidence=0.9, prompt=_TYPE_PROMPT[etype],
+            confidence=0.9,
+            # editor-sent prompt wins (surface-aware, e.g. "brick pavement
+            # with fallen leaves"); the generic family prompt is the fallback
+            prompt=(r.prompt or "").strip() or _TYPE_PROMPT[etype],
             duration_hint=_TYPE_DUR[etype], gain=float(min(max(r.gain, 0.0), 2.0)))
         evs.append(ev)
     evs.sort(key=lambda e: e.start_sec)

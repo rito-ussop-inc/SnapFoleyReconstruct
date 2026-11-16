@@ -110,14 +110,18 @@ class UniversalDetector:
                 out = []
                 prmax = max(lproms) if lproms else 1.0
                 for i, (p, pr) in enumerate(zip(lp, lproms)):
-                    # events stay ON the lower-frame energy peaks (verified on
-                    # the ball's visible floor contacts). Louder humps = harder
-                    # dribbles, so gain tracks relative prominence mildly.
-                    sec = float(p / fps)
+                    # Contact = the instant the ball STOPS moving: after the
+                    # raw energy max, the first frame where the lower-frame
+                    # energy falls below 55% of that max (arrival is fast,
+                    # contact = stillness). Frame-verified on dribble footage:
+                    # the smoothed hump peak sits 1-2 frames EARLY on some
+                    # contacts; this re-time lands on the visible touch.
+                    sec = self._contact_frame(p, low_e, fps) / fps
                     g = 0.75 + 0.35 * (pr / max(prmax, 1e-6))
                     out.append(Event(event_id=f"bou_{i:04d}", type="bounce",
-                                     start_sec=sec, end_sec=sec + 0.35, frame=int(p),
-                                     timecode=_smpte(int(p), fps), confidence=0.8,
+                                     start_sec=sec, end_sec=sec + 0.35,
+                                     frame=int(round(sec * fps)),
+                                     timecode=_smpte(int(round(sec * fps)), fps), confidence=0.8,
                                      prompt="ball bounce impact, close-mic, foley",
                                      duration_hint=0.35, gain=float(round(min(g, 1.1), 2))))
                 return out
@@ -128,7 +132,8 @@ class UniversalDetector:
                 e.event_id = f"bou_{i:04d}"
                 e.duration_hint = 0.35
                 if low_e is not None:
-                    e.frame = self._snap(e.frame, low_e, int(0.25 * fps))
+                    e.frame = self._contact_frame(self._snap(e.frame, low_e, int(0.25 * fps)),
+                                                  low_e, fps)
                     e.start_sec = e.frame / fps
                     e.end_sec = e.start_sec + 0.35
                     e.timecode = _smpte(e.frame, fps)
@@ -185,6 +190,25 @@ class UniversalDetector:
             return frame
         seg = energy[lo:hi]
         return int(lo + int(np.argmax(seg)))
+
+    def _contact_frame(self, p: int, low_e: np.ndarray, fps: float) -> int:
+        """Ball floor contact: the stillness instant after the raw energy max.
+
+        The lower-frame energy hump PEAKS while the ball is still travelling
+        fast; the visible touch is right after, where the energy collapses
+        (ball momentarily still). Scan from the RAW local max forward to the
+        first frame below 55% of it, capped at +0.12s so a long flat hump
+        can't drag the event late. Frame-verified on dribble footage.
+        """
+        half = max(2, int(fps * 0.22))
+        lo, hi = max(0, p - half), min(len(low_e), p + half + 1)
+        pr = lo + int(np.argmax(low_e[lo:hi]))
+        vmax = float(low_e[pr])
+        limit = min(len(low_e), pr + max(2, int(fps * 0.12)))
+        for k in range(pr, limit):
+            if low_e[k] < vmax * 0.55:
+                return int(k)
+        return int(pr)
 
     def _motion_detect(self, video_path: str, fps: float = 30.0, progress_callback=None):
         cap = cv2.VideoCapture(str(video_path))

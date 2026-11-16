@@ -97,15 +97,11 @@
         </div>
       </div>
 
-      <h3>3. Edit sounds</h3>
-      <p class="hint">Rows glow while the video plays over them. Move a sound in time, change what it is,
-        set its volume, delete or add at the playhead — then re-render.</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th style="width:32%">Time (s)</th><th>Sound</th><th style="width:28%">Volume</th><th></th></tr></thead>
-          <tbody id="editBody"></tbody>
-        </table>
-      </div>
+      <h3>3. Manual audio editor — every sound, fully editable</h3>
+      <p class="hint">Rows glow while the video plays over them. ▶ plays from just before a sound.
+        Move a sound in time, change what it is, describe how it should sound (surface/material wording
+        matters), set its volume, delete or add at the playhead — then re-render.</p>
+      <div id="editBody" class="ed-list"></div>
       <div class="row">
         <button class="btn ghost" id="addEventBtn" disabled>＋ Add sound at playhead</button>
         <button class="btn primary" id="applyMixBtn" disabled>✓ Re-render audio with my edits</button>

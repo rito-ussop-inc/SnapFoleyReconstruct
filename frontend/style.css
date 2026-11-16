@@ -237,14 +237,36 @@ tbody tr.active-row{background:rgba(139,124,255,.16)}
 .evt-dot.ambience{background:var(--teal);box-shadow:0 0 6px var(--teal)}
 
 /* ------------------------------------------------ editor --- */
-.ed-time,.ed-type{
-  background:var(--inset);color:var(--text);border:1px solid var(--line);
-  border-radius:8px;padding:5px 6px;font-size:12px;
+.ed-list{
+  max-height:320px;overflow:auto;border:1px solid var(--line);
+  border-radius:12px;background:var(--inset);padding:6px;
 }
-.ed-time:focus-visible,.ed-type:focus-visible{outline:2px solid var(--acc);outline-offset:0}
-.ed-gval{font-size:11px;color:var(--muted);margin-left:4px;display:inline-block;min-width:30px}
+.ed-list::-webkit-scrollbar{width:9px;height:9px}
+.ed-list::-webkit-scrollbar-thumb{background:#232c3d;border-radius:9px;border:2px solid var(--inset)}
+.ed-list::-webkit-scrollbar-thumb:hover{background:#2e3a4f}
+.ed-row{
+  border:1px solid var(--line);border-radius:10px;padding:7px 8px;margin-bottom:6px;
+  background:rgba(148,163,199,.04);
+}
+.ed-row:hover{background:rgba(139,124,255,.07)}
+.ed-row.active-row{background:rgba(139,124,255,.16);border-color:rgba(139,124,255,.45)}
+.ed-line1{display:grid;grid-template-columns:26px 92px 108px 1fr 30px;gap:6px;align-items:center}
+.ed-play{padding:3px 8px;font-size:11px;line-height:1.2}
+.ed-time,.ed-type,.ed-prompt{
+  background:var(--inset);color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:5px 6px;font-size:12px;min-width:0;
+}
+.ed-time:focus-visible,.ed-type:focus-visible,.ed-prompt:focus-visible{outline:2px solid var(--acc);outline-offset:0}
+.ed-prompt{width:100%;margin-top:6px}
+.ed-prompt::placeholder{color:var(--faint);font-style:italic}
+.ed-gain-wrap{display:flex;align-items:center;gap:4px;min-width:0}
+.ed-gval{font-size:11px;color:var(--muted);display:inline-block;min-width:30px}
 .ed-del{padding:2px 9px}
-#editBody input[type=range]{accent-color:var(--teal);height:16px}
+.ed-empty{color:var(--muted);padding:18px;text-align:center}
+#editBody input[type=range]{accent-color:var(--teal);height:16px;width:100%}
+@media (max-width:640px){
+  .ed-line1{grid-template-columns:26px 80px 96px 1fr 30px}
+}
 
 /* ------------------------------------------------ misc --- */
 .hidden{display:none!important}

@@ -1,9 +1,13 @@
 """Multi-track mixer — real-sample foley renderer.
 
-Design (v2, "matches the video" edition):
- - Footsteps: real CC0 step samples (Kenney, audio_bank/footsteps/<surface>/),
-   one per detected step, with pitch/gain/timing variation so no two hits are
-   identical. Surface picked from the prompt keywords, default concrete.
+Design (v3, "real recordings" edition):
+ - Footsteps: real step recordings (audio_bank/footsteps/<surface>/ — Mixkit
+   for pavement/leaves, CC0 Kenney for the rest), one per detected step. With
+   a recording available it is the LEAD layer and synth only supports it
+   subtly; surface picked from the prompt keywords, default pavement.
+ - Punches / bounces: real Mixkit one-shots (audio_bank/punches, /basketball),
+   re-pitched per hit so no two hits sound identical; the physical synths
+   (_punch_hit/_bounce_hit) remain as fallbacks.
  - Typing: dual-transient keyboard click bed, only across the typing span.
  - Activity: soft real impact transients synced to each detected motion peak.
  - Ambience: quiet noise bed across ambience ranges only.
@@ -22,14 +26,16 @@ from app.schemas import Event, Clip, Track, Timeline
 BANK = Path(__file__).resolve().parent.parent / "audio_bank"
 
 SURFACE_KEYWORDS = {
-    "concrete": ["concrete", "pavement", "paved", "stone", "brick", "sidewalk",
-                 "street", "road", "tile", "marble", "asphalt", "cobble", "leaves"],
+    # order matters: map_surface returns the FIRST surface whose keyword hits.
+    "leaves":   ["leaves", "leaf", "autumn"],
+    "pavement": ["pavement", "brick", "sidewalk", "asphalt", "street", "road", "cobble"],
+    "concrete": ["concrete", "paved", "stone", "tile", "marble"],
     "grass":    ["grass", "gravel", "lawn", "field", "meadow", "garden", "dirt"],
     "wood":     ["wood", "wooden", "floorboard", "hardwood", "deck", "floor"],
     "carpet":   ["carpet", "rug", "indoors", "indoor", "room", "office", "home"],
     "snow":     ["snow", "ice", "frost", "winter"],
 }
-DEFAULT_SURFACE = "concrete"
+DEFAULT_SURFACE = "pavement"
 
 _sample_cache = {}
 
@@ -53,6 +59,10 @@ def _load_sample(path: Path, sr: int) -> np.ndarray:
         pass
     if y is None or len(y) == 0:
         y = _synth_step(sr)
+    y = np.asarray(y, dtype=np.float32)
+    peak = float(np.max(np.abs(y)))
+    if peak > 1e-9:
+        y = y / peak * 0.9          # consistent lead-layer level across the bank
     _sample_cache[key] = y.astype(np.float32)
     return _sample_cache[key]
 
@@ -128,19 +138,25 @@ def _synth_scuff(sr, dur=0.055):
     return (y * env).astype(np.float32)
 
 _SURFACE_SHAPE = {   # how the contact sample is voiced per material
+    "pavement": dict(kind="high", f=320,  g=0.95),
     "concrete": dict(kind="high", f=320,  g=0.95),
+    "leaves":   dict(kind="band", f=400,  f2=4000, g=0.9),
     "grass":    dict(kind="low",  f=2400, g=0.85),
     "wood":     dict(kind="band", f=200,  f2=1100, g=1.0),
     "carpet":   dict(kind="low",  f=1100, g=0.55),
     "snow":     dict(kind="low",  f=1800, g=0.80),
 }
 
-# Per-material voicing of the SYNTHESIZED contact layers. The bundled CC0
-# samples are dull low thuds (fine for texture), so the identity of a real
-# step — sharp heel click + surface crunch — is synthesized per material.
+# Per-material voicing of the SYNTHESIZED contact layers. With a REAL bank
+# sample present the sample is the lead layer and these drop to subtle
+# support; without one they carry the whole step.
 _HIT_PARAMS = {
+    "pavement": dict(thump=(115, 60, 0.40), click=(1500, 7500, 0.50), crunch=(300, 4000, 0.35),
+                     sample_g=0.25, room=0.12),
     "concrete": dict(thump=(115, 60, 0.40), click=(1500, 7500, 0.50), crunch=(300, 4000, 0.35),
                      sample_g=0.25, room=0.12),
+    "leaves":   dict(thump=(95, 55, 0.30),  click=(900, 6000, 0.35),  crunch=(400, 4500, 0.45),
+                     sample_g=0.25, room=0.07),
     "wood":     dict(thump=(100, 55, 0.45), click=(800, 4500, 0.45),  crunch=(250, 2200, 0.30),
                      sample_g=0.30, room=0.12),
     "grass":    dict(thump=(85, 45, 0.50),  click=(700, 3500, 0.20),  crunch=(300, 2500, 0.40),
@@ -172,8 +188,35 @@ def _room_tail(y, sr, dur=0.13, wet=0.11):
     return (y * (1 - wet) + tail * wet).astype(np.float32)
 
 def _footstep_hit(sr, surface, sample_path=None):
-    """One complete footstep: scuff -> heel click + crunch + body thump -> texture."""
-    p = _HIT_PARAMS.get(surface, _HIT_PARAMS["concrete"])
+    """One complete footstep.
+
+    With a REAL recording (audio_bank — Mixkit pavement/leaves, Kenney rest)
+    the sample is the LEAD layer: the step must read as a recorded step, not
+    a processed one, so synth drops to subtle support (small body thump +
+    room tail) and the heel-toe double-hit is skipped (recordings already
+    carry the natural weight transfer). Without one, full synthesis.
+    """
+    p = _HIT_PARAMS.get(surface, _HIT_PARAMS["pavement"])
+    lead = None
+    if sample_path is not None:
+        lead = _load_sample(sample_path, sr)
+        if lead is not None and len(lead) > int(0.06 * sr):
+            total = max(int(sr * 0.42), len(lead))
+            y = np.zeros(total, dtype=np.float32)
+            y[:len(lead)] += lead * random.uniform(0.9, 1.1)
+            # subtle support: small body thump so the step has scene weight
+            f1, f2, tg = p["thump"]
+            th = _synth_thump(sr, f_start=f1 * random.uniform(0.9, 1.15),
+                              f_end=f2 * random.uniform(0.9, 1.1),
+                              tau=0.030 * random.uniform(0.85, 1.2))
+            y[:len(th)] += th * tg * 0.45
+            y = _room_tail(y, sr, wet=p["room"])
+            peak = np.max(np.abs(y))
+            if peak > 1e-9:
+                y = (y / peak * 0.92).astype(np.float32)
+            return y
+
+    # --- no usable recording: full synthesized step -------------------------
     dur = 0.42
     total = int(sr * dur)
     y = np.zeros(total, dtype=np.float32)
@@ -209,13 +252,6 @@ def _footstep_hit(sr, surface, sample_path=None):
         y[o2:o2 + len(th2)] += th2 * tg * 0.45
         y[o2:o2 + len(click)] += click * cl_g * 0.25
 
-    # 4. sample texture — the CC0 recording, quiet, adds sole/floor character
-    if sample_path is not None and p["sample_g"] > 0:
-        s = _load_sample(sample_path, sr)
-        n = min(len(s), int(0.16 * sr))
-        s = _vary(s[:n].copy(), 0.08)
-        y[:len(s)] += s * p["sample_g"] * random.uniform(0.7, 1.1)
-
     y = _room_tail(y, sr, wet=p["room"])
     peak = np.max(np.abs(y))
     if peak > 1e-9:
@@ -229,7 +265,17 @@ def _synth_step(sr=44100):
 # ---------------------------------------------------------------- renderers --
 
 def _leaf_crunch(sr, big=True):
-    """Dried-leaf crunch underfoot: crisp rustle + 2-3 brittle crackle ticks."""
+    """Dried-leaf crunch underfoot: a real Mixkit recording when available,
+    else the synthesized rustle + brittle crackle ticks."""
+    files = sorted((BANK / "leafcrunch").glob("*.wav"))
+    if files:
+        s = _load_sample(random.choice(files), sr)
+        n = min(len(s), int((0.38 if big else 0.22) * sr))
+        s = _vary(s[:n].copy(), 0.05)
+        peak = float(np.max(np.abs(s)))
+        if peak > 1e-9:
+            s = (s / peak * random.uniform(0.55, 0.85)).astype(np.float32)
+        return s
     dur = 0.14 if big else 0.08
     n = int(sr * dur)
     y = np.random.randn(n).astype(np.float32)
@@ -253,18 +299,21 @@ def render_footsteps(events, duration_sec, sr, prompt=""):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
     surface = map_surface(prompt)
-    files = _bank_files("footsteps", surface)
+    # concrete has only tiny CC0 clicks in the bank; the pavement recordings
+    # are the same city hard-surface walk, so voice concrete with them.
+    files = _bank_files("footsteps", {"concrete": "pavement"}.get(surface, surface))
     leafy = "leaves" in (prompt or "").lower()
     for i, e in enumerate(events):
         g = float(getattr(e, "gain", 1.0))
         if g <= 0: continue
         y = _footstep_hit(sr, surface, files[i % len(files)] if files else None)
-        if leafy and random.random() < 0.45:
-            # some steps land on/near fallen leaves: add a crunch layer
+        if leafy and surface != "leaves" and random.random() < 0.3:
+            # steps near fallen leaves: real crunch layer (leaves-surface
+            # recordings already carry their own leaf crunch)
             lc = _leaf_crunch(sr)
             o = int(random.uniform(0.0, 0.02) * sr)
             n = min(len(lc), max(0, len(y) - o))
-            y[o:o + n] += lc[:n] * random.uniform(0.7, 1.1)
+            y[o:o + n] += lc[:n] * random.uniform(0.5, 0.8)
         jitter = random.uniform(-0.015, 0.015)
         _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.8, 1.0) * g)
     return track
@@ -339,8 +388,9 @@ def render_activity(events, duration_sec, sr):
     return track
 
 # ------------------------------------------------- ball bounce & punch hits --
-# Both are physical contact sounds; pure synthesis lets every hit vary
-# naturally (the old generic-bank loop was the "same repetitive sounds" bug).
+# v3: REAL Mixkit one-shots are the primary source (audio_bank/punches,
+# audio_bank/basketball), re-pitched per hit so repeats never sound identical;
+# the physical synths below stay as fallbacks when the bank is unavailable.
 
 def _bounce_hit(sr, surface="hard"):
     """Basketball dribble on a hard court: click -> shell 'thock' -> floor thump.
@@ -446,15 +496,25 @@ def _synth_clap(sr):
     if peak > 1e-9: y = (y / peak * 0.9).astype(np.float32)
     return y
 
+def _bank_hit(sr, folder, synth_fallback):
+    """One real one-shot from audio_bank/<folder>/, re-pitched a little so no
+    two hits sound identical. Falls back to the physical synth when the bank
+    folder is empty."""
+    files = sorted((BANK / folder).glob("*.wav"))
+    if not files:
+        return synth_fallback(sr)
+    s = _load_sample(random.choice(files), sr)
+    return _vary(s, random.uniform(0.05, 0.11))
+
 def render_bounce(events, duration_sec, sr, prompt=""):
     total = int(duration_sec * sr)
     track = np.zeros(total, dtype=np.float32)
     for i, e in enumerate(events):
         g = float(getattr(e, "gain", 1.0))
         if g <= 0: continue
-        y = _bounce_hit(sr)
+        y = _bank_hit(sr, "basketball", _bounce_hit)
         jitter = random.uniform(-0.012, 0.012)
-        _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.8, 1.0) * g)
+        _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.85, 1.05) * g)
     return track
 
 def render_punch(events, duration_sec, sr, prompt=""):
@@ -463,7 +523,7 @@ def render_punch(events, duration_sec, sr, prompt=""):
     for i, e in enumerate(events):
         g = float(getattr(e, "gain", 1.0))
         if g <= 0: continue
-        y = _punch_hit(sr)
+        y = _bank_hit(sr, "punches", _punch_hit)
         jitter = random.uniform(-0.012, 0.012)
         _place(track, y, int((e.start_sec + jitter) * sr), random.uniform(0.85, 1.05) * g)
     return track
