@@ -51,6 +51,16 @@ def _load_sample(path: Path, sr: int) -> np.ndarray:
     key = (str(path), sr)
     if key in _sample_cache:
         return _sample_cache[key]
+    try:
+        if path.stat().st_size < 500:
+            # Git LFS pointer file (git-lfs missing on this machine) — the real
+            # recording is NOT here. Loud warning instead of a silent synth
+            # fallback that would make every hit sound fake again.
+            print(f"[snapfoley] WARNING: {path} is a {path.stat().st_size}B stub — "
+                  f"run 'git lfs install && git lfs pull' to fetch the real samples",
+                  flush=True)
+    except OSError:
+        pass
     y = None
     try:
         import librosa
